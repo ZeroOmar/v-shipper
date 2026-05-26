@@ -364,3 +364,4 @@ For issues and questions:
 2. Review `.agents.md` for architecture details
 3. Check logs: `docker logs v-shipper`
 4. Open GitHub issue with configuration (sanitized) and error logs
+
