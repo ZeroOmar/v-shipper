@@ -1,5 +1,5 @@
 # Multi-stage build for slim image
-FROM python:3-alpine as builder
+FROM python:3.11-alpine as builder
 
 # Install build dependencies
 RUN apk add --no-cache --virtual .build-deps \
@@ -18,7 +18,7 @@ RUN apk del .build-deps
 
 
 # Final runtime stage
-FROM alpine:3-alpine
+FROM alpine:3.20
 
 # Install runtime dependencies
 RUN apk add --no-cache \
