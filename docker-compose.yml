@@ -1,0 +1,36 @@
+services:
+  v-shipper:
+    build: .
+    container_name: v-shipper
+    ports:
+      - "8000:80"
+    environment:
+      VOLUME_MANAGER_CONFIG: |
+        docker_hosts:
+          - name: local
+            ip: localhost
+            pool: /mnt/pools/local
+            pool_type: local
+          - name: backup
+            ip: localhost
+            pool: /mnt/pools/backup
+            pool_type: local
+        backup_pools:
+          - name: backup1
+            path: /mnt/backups
+        web_ui:
+          port: 80
+          admin_user: admin
+          admin_password: YWRtaW4=
+    volumes:
+      - ./mnt/pools/local:/mnt/pools/local:rw
+      - ./mnt/pools/backup:/mnt/pools/backup:rw
+      - ./mnt/backups:/mnt/backups:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - v-shipper-net
+    restart: unless-stopped
+
+networks:
+  v-shipper-net:
+    driver: bridge
