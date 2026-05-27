@@ -1,5 +1,7 @@
 # v-shipper: Docker Volume Migration Application
 
+### Warning: this is a vibe coded application
+
 A stateless, containerized Python + FastAPI application for managing and migrating Docker volumes across multiple pools with a modern web UI.
 
 ## Features
