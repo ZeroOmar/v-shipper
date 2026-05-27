@@ -10,8 +10,8 @@ RUN apk add --no-cache --virtual .build-deps \
 # Copy requirements
 COPY requirements.txt .
 
-# Install Python dependencies to user site-packages
-RUN pip install --user --no-cache-dir -r requirements.txt
+# Install Python dependencies into the shared runtime site-packages
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Clean up build dependencies
 RUN apk del .build-deps
@@ -36,22 +36,22 @@ RUN addgroup -g 1000 appuser && \
 WORKDIR /app
 
 # Copy Python packages from builder
-COPY --from=builder /root/.local /home/appuser/.local
+COPY --from=builder /usr/local /usr/local
 
 # Copy application
-COPY --chown=appuser:appuser app/ /app/
+COPY app/ /app/
 
 # Create necessary directories
 RUN mkdir -p /tmp/locks /config && \
     chown -R appuser:appuser /tmp/locks /config
 
 # Set environment variables
-ENV PATH=/home/appuser/.local/bin:$PATH \
+ENV PATH=/usr/local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Switch to non-root user
-USER appuser
+# Run application as root so it can work with root-owned files
+USER root
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
