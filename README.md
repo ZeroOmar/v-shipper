@@ -30,7 +30,6 @@ Configuration is provided via the `VOLUME_MANAGER_CONFIG` environment variable a
 ```yaml
 docker_hosts:
   - name: host1
-    ip: 10.0.0.1
     pool: /var/lib/docker/volumes
     pool_type: local              # or 'remote' for NFS/mounted remote paths
 
@@ -91,7 +90,6 @@ echo -n "mysecurepassword" | base64
    export VOLUME_MANAGER_CONFIG='
    docker_hosts:
      - name: local
-       ip: localhost
        pool: ./test_volumes/host1
        pool_type: local
    backup_pools:
@@ -125,7 +123,6 @@ docker run -d \
   -e "VOLUME_MANAGER_CONFIG=$(cat <<'EOF'
 docker_hosts:
   - name: prod-pool
-    ip: localhost
     pool: /mnt/docker_volumes
     pool_type: local
 backup_pools:
@@ -239,7 +236,6 @@ mount -t nfs 10.0.0.1:/export/volumes /mnt/remote_volumes
 # Then reference in config
 docker_hosts:
   - name: remote-nfs
-    ip: 10.0.0.1
     pool: /mnt/remote_volumes
     pool_type: remote    # UI label only; works like local pools
 ```
@@ -266,12 +262,11 @@ The application automatically:
 
 ### Best Practices
 
-1. **SSH Keys**: Store SSH private keys securely, use dedicated key for each host
-2. **Passwords**: Use strong passwords, rotate regularly
-3. **Backups**: Verify backup integrity, test restore procedures
-4. **Monitoring**: Monitor logs for errors, set up alerts
-5. **Access Control**: Limit container access to trusted networks
-6. **Storage**: Use encrypted filesystems for sensitive volumes
+1. **Passwords**: Use strong passwords, rotate regularly
+2. **Backups**: Verify backup integrity, test restore procedures
+3. **Monitoring**: Monitor logs for errors, set up alerts
+4. **Access Control**: Limit container access to trusted networks
+5. **Storage**: Use encrypted filesystems for sensitive volumes
 
 ## Troubleshooting
 
@@ -289,11 +284,11 @@ Verify pool directories exist and are mounted correctly:
 docker exec v-shipper ls -la /mnt/pools/
 ```
 
-### SSH Connection Errors
+### Remote Pool Mount Errors
 
-Test SSH connectivity manually:
+Verify remote storage is mounted and accessible from the host running v-shipper:
 ```bash
-ssh -i /path/to/key admin@host-ip
+docker exec v-shipper ls -la /mnt/remote_volumes
 ```
 
 ### Migration Hangs
@@ -321,7 +316,7 @@ v-shipper/
 │   │   ├── volume_service.py
 │   │   ├── migration_service.py
 │   │   ├── backup_service.py
-│   │   ├── ssh_service.py
+│   │   ├── ssh_service.py      # deprecated legacy SSH support
 │   │   ├── docker_service.py
 │   │   └── task_queue.py
 │   ├── templates/
@@ -353,11 +348,9 @@ pip install -r requirements.txt
 export VOLUME_MANAGER_CONFIG='
 docker_hosts:
   - name: local
-    ip: localhost
     pool: ./test_volumes/host1
     pool_type: local
   - name: local2
-    ip: localhost
     pool: ./test_volumes/host2
     pool_type: local
 backup_pools:
@@ -400,13 +393,13 @@ git push origin v1.0.1
 - **Sequential Operations**: One migration/backup at a time (by design)
 - **Memory**: In-memory task queue, suitable for single-container deployment
 - **Disk I/O**: Rsync streams data, doesn't buffer entire files
-- **Network**: SSH adds latency for remote operations, typical 10-50ms
+- **Network**: Remote mounted pools may add latency depending on storage network
 
 ## Limitations
 
 - Sequential operations only (no parallel migrations)
 - Session memory lost on container restart
-- SSH key in environment variable (use Docker Secrets for production)
+- Configuration secrets should use Docker Secrets or environment variables securely
 - No built-in backup rotation (manual cleanup)
 - No multi-user RBAC (single admin account)
 

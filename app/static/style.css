@@ -26,9 +26,19 @@ header {
     box-shadow: 0 12px 36px rgba(30, 136, 229, 0.18);
 }
 
+header .container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.header-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+}
+
 header h1 {
-    display: inline-block;
-    margin-right: 16px;
     font-size: 28px;
     letter-spacing: 0.02em;
 }
@@ -36,8 +46,252 @@ header h1 {
 .header-controls {
     display: inline-flex;
     gap: 10px;
-    vertical-align: middle;
     align-items: center;
+}
+
+.brand-icon {
+    width: 36px;
+    height: 36px;
+}
+
+.login-brand {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 20px;
+}
+
+.login-brand-icon {
+    width: 48px;
+    height: 48px;
+}
+
+.login-copy {
+    text-align: center;
+    color: #7f8c8d;
+    margin-bottom: 20px;
+}
+
+.header-user {
+    color: #ffffff;
+    font-size: 14px;
+}
+
+body.light {
+    background: #eceff1;
+    color: #263238;
+}
+
+body.light header {
+    background: #1e88e5;
+}
+
+body.light .section,
+body.light .pools-sidebar,
+body.light .volumes-section,
+body.light .progress-sidebar,
+body.light .modal-content {
+    background: white;
+}
+
+body.dark {
+    background: #161b22;
+    color: #e1e8f0;
+}
+
+body.dark header {
+    background: #0f4c81;
+}
+
+body.dark .section,
+body.dark .pools-sidebar,
+body.dark .volumes-section,
+body.dark .progress-sidebar,
+body.dark .modal-content,
+body.dark .login-form {
+    background: #1e2730;
+}
+
+body.dark .login-form h2,
+body.dark .login-form p,
+body.dark .login-copy {
+    color: #e1e8f0;
+}
+
+body.dark .login-copy {
+    color: #94a3b8;
+}
+
+body.dark input[type="text"],
+body.dark input[type="password"],
+body.dark select {
+    background: #24313f;
+    border-color: #44515f;
+    color: #e1e8f0;
+}
+
+body.dark input[type="checkbox"] {
+    accent-color: #4dabf7;
+}
+
+body.dark button,
+body.dark .btn {
+    background: #2f80ed;
+    color: white;
+    border: 1px solid rgba(255,255,255,0.14);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+}
+
+body.dark button:hover,
+body.dark .btn:hover {
+    background: #1e5fc0;
+}
+
+body.dark button.danger,
+body.dark .btn.danger {
+    background: #d64550;
+}
+
+body.dark button.danger:hover,
+body.dark .btn.danger:hover {
+    background: #b33642;
+}
+
+body.dark button.success,
+body.dark .btn.success {
+    background: #42a768;
+}
+
+body.dark button.success:hover,
+body.dark .btn.success:hover {
+    background: #319050;
+}
+
+body.dark .toast {
+    color: #fff;
+}
+
+body.dark .task-history-item {
+    background: #17212c;
+    border-color: rgba(255,255,255,0.08);
+}
+
+body.dark .task-status.pending {
+    background: #0f2f53;
+    color: #8bd1ff;
+}
+
+body.dark .task-status.running {
+    background: #3c2d12;
+    color: #ffca7a;
+}
+
+body.dark .task-status.completed {
+    background: #192c1d;
+    color: #92d0a8;
+}
+
+body.dark .task-status.failed {
+    background: #3c1516;
+    color: #ff9ca8;
+}
+
+body.dark .task-status.pending {
+    background: #0f2f53;
+    color: #8bd1ff;
+}
+
+body.dark .task-status.running {
+    background: #3c2d12;
+    color: #ffca7a;
+}
+
+body.dark .task-status.completed {
+    background: #192c1d;
+    color: #92d0a8;
+}
+
+body.dark .task-status.failed {
+    background: #3c1516;
+    color: #ff9ca8;
+}
+
+body.dark .pools-sidebar,
+body.dark .volumes-section,
+body.dark .progress-sidebar {
+    background: #161f2c;
+}
+
+body.dark .pool-item {
+    background: #1f2733;
+    border-color: rgba(255,255,255,0.06);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+}
+
+body.dark .pool-item.active {
+    background: linear-gradient(135deg, #1f2f47 0%, #192336 100%);
+    border-color: #4f8ed2;
+    box-shadow: 0 14px 32px rgba(0,0,0,0.32);
+}
+
+body.dark .pool-name,
+body.dark .stat-value,
+body.dark .volume-name,
+body.dark .volume-details,
+body.dark .task-meta,
+body.dark .task-status,
+body.dark .form-group label,
+body.dark .checkbox-label,
+body.dark .header-user,
+body.dark .modal-header h3,
+body.dark .modal-content p {
+    color: #e1e8f0;
+}
+
+body.dark .pool-type {
+    background: #26344a;
+    color: #cbd5e1;
+}
+
+body.dark .stat-label {
+    color: #94a3b8;
+}
+
+body.dark .progress-bar {
+    background: #334155;
+}
+
+body.dark .progress-fill {
+    background: linear-gradient(90deg, #45aaf2, #3f83c4);
+}
+
+body.dark .modal-content {
+    background: #171f2c;
+}
+
+body.dark .close-btn {
+    color: #cbd5e1;
+}
+
+body.dark .header-controls .btn {
+    background: rgba(255,255,255,0.08);
+    color: #f8fafc;
+    border-color: rgba(255,255,255,0.14);
+}
+
+body.dark .header-controls .btn:hover {
+    background: rgba(255,255,255,0.12);
+}
+
+body.dark .volume-item {
+    background: #1f2733;
+    border-color: rgba(255,255,255,0.06);
+    box-shadow: 0 10px 26px rgba(0,0,0,0.24);
+}
+
+body.dark .volume-item .volume-details {
+    color: #94a3b8;
 }
 
 button, .btn {
@@ -369,6 +623,33 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus {
     margin-bottom: 5px;
     font-weight: bold;
     color: #2c3e50;
+}
+
+.checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 500;
+    color: #2c3e50;
+    cursor: pointer;
+    margin-bottom: 0;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: #1e88e5;
+}
+
+.warning-banner {
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    background: #fff3cd;
+    border: 1px solid #ffe8a1;
+    border-radius: 16px;
+    color: #856404;
+    font-size: 13px;
 }
 
 .form-group input, .form-group select {

@@ -1,14 +1,13 @@
 """Data models for v-shipper application."""
 
 import base64
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, field_validator
 
 
 class DockerHost(BaseModel):
     """Docker host pool configuration."""
     name: str
-    ip: str
     pool: str
     pool_type: str  # 'local' or 'remote'
 
@@ -68,6 +67,7 @@ class VolumeInfo(BaseModel):
     name: str
     path: str
     size_gb: float
+    size_bytes: int = 0
     size_loading: bool = False
     created_timestamp: Optional[int] = None
     backups: List[str] = Field(default_factory=list)
@@ -77,6 +77,33 @@ class VolumesListResponse(BaseModel):
     """List of volumes in a pool."""
     pool: str
     volumes: List[VolumeInfo]
+    warnings: List[str] = Field(default_factory=list)
+
+
+class TaskResponse(BaseModel):
+    """Task response."""
+    task_id: str
+    status: str  # pending, running, completed, failed
+    task_type: Optional[str] = None
+    progress_percent: int = 0
+
+
+class TaskProgressResponse(BaseModel):
+    """Task progress details."""
+    task_id: str
+    status: str
+    task_type: Optional[str] = None
+    progress_percent: int
+    current_operation: Optional[str] = None
+    elapsed_seconds: int = 0
+    estimated_remaining_seconds: Optional[int] = None
+    error: Optional[str] = None
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TasksListResponse(BaseModel):
+    """List of persisted tasks."""
+    tasks: List[TaskProgressResponse]
 
 
 class VolumeDetailResponse(BaseModel):
@@ -84,6 +111,7 @@ class VolumeDetailResponse(BaseModel):
     name: str
     pool: str
     size_gb: float
+    size_bytes: int = 0
     created_timestamp: Optional[int] = None
     backups: List[str]
     locked: bool = False
@@ -133,24 +161,6 @@ class PoolCreateRequest(BaseModel):
     """Create new pool request."""
     name: str
     path: str
-
-
-class TaskResponse(BaseModel):
-    """Task response."""
-    task_id: str
-    status: str  # pending, running, completed, failed
-    progress_percent: int = 0
-
-
-class TaskProgressResponse(BaseModel):
-    """Task progress details."""
-    task_id: str
-    status: str
-    progress_percent: int
-    current_operation: Optional[str] = None
-    elapsed_seconds: int = 0
-    estimated_remaining_seconds: Optional[int] = None
-    error: Optional[str] = None
 
 
 class HealthResponse(BaseModel):

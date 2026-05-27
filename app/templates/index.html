@@ -10,8 +10,11 @@
     <!-- Login Screen -->
     <div id="loginScreen" class="login-screen">
         <form class="login-form" onsubmit="event.preventDefault(); login();">
-            <h2>v-shipper</h2>
-            <p style="text-align: center; color: #7f8c8d; margin-bottom: 20px;">Docker Volume Migration</p>
+            <div class="login-brand">
+                <img class="brand-icon login-brand-icon" src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/docker.svg" alt="Docker">
+                <h2>v-shipper</h2>
+            </div>
+            <p class="login-copy">Docker Volume Migration</p>
             
             <input type="text" id="username" placeholder="Username" required>
             <input type="password" id="password" placeholder="Password" required>
@@ -24,12 +27,15 @@
     <div id="dashboard" class="dashboard">
         <header>
             <div class="container">
-                <h1>v-shipper</h1>
+                <div class="header-brand">
+                    <img class="brand-icon" src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/docker.svg" alt="Docker">
+                    <h1>v-shipper</h1>
+                </div>
                 <div class="header-controls">
-                    <button class="btn" onclick="loadPools()">🔄 Refresh</button>
-                    <span style="margin: 0 10px; vertical-align: middle; color: white;">
-                        Logged in as: <strong id="currentUser">admin</strong>
-                    </span>
+                    <button class="btn" onclick="runTroubleshootCleanup()">🧹 Cleanup</button>
+                    <button class="btn" id="themeToggleButton" onclick="toggleTheme()">🎨 System</button>
+                    <button class="btn" onclick="loadPools()">🔄</button>
+                    <span class="header-user">🫵 <strong id="currentUser">admin</strong></span>
                     <button class="btn danger" onclick="logout()">Logout</button>
                 </div>
             </div>

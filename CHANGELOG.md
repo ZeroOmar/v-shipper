@@ -73,7 +73,6 @@ docker_hosts:
 ```yaml
 docker_hosts:
   - name: prod-host
-    ip: 10.0.0.100        # For reference only, not used by app
     pool: /mnt/docker_volumes
     pool_type: remote     # UI label; path must be mounted as filesystem
 ```

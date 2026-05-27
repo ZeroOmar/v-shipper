@@ -33,11 +33,8 @@ class ConfigManager:
             for host_config in config_dict.get("docker_hosts", []):
                 host = DockerHost(
                     name=host_config["name"],
-                    ip=host_config["ip"],
                     pool=host_config["pool"],
-                    pool_type=host_config.get("pool_type", "local"),
-                    ssh_user=host_config.get("ssh_user"),
-                    ssh_key=host_config.get("ssh_key")
+                    pool_type=host_config.get("pool_type", "local")
                 )
                 docker_hosts.append(host)
             

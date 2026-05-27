@@ -1,11 +1,12 @@
 """API routes for v-shipper."""
 
 import base64
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from app.models import (
     LoginRequest, PoolsListResponse, VolumesListResponse, VolumeDetailResponse,
     MigrateRequest, BackupRequest, RenameRequest, DeleteRequest, RestoreRequest, PoolCreateRequest,
-    TaskResponse, TaskProgressResponse, HealthResponse, PoolStats, VolumeInfo
+    TaskResponse, TaskProgressResponse, TasksListResponse, HealthResponse, PoolStats, VolumeInfo
 )
 from app.services.volume_service import get_volume_service
 from app.services.migration_service import get_migration_service
@@ -130,8 +131,8 @@ async def list_volumes(pool: str, session: dict = Depends(require_auth)):
         config = get_config()
         volume_service = get_volume_service(config)
         
-        volumes = volume_service.list_volumes(pool)
-        return VolumesListResponse(pool=pool, volumes=volumes)
+        volumes, warnings = volume_service.list_volumes(pool)
+        return VolumesListResponse(pool=pool, volumes=volumes, warnings=warnings)
     
     except Exception as e:
         print(f"[ERROR] Failed to list volumes: {e}", flush=True)
@@ -277,6 +278,7 @@ async def delete_volume(request: DeleteRequest, session: dict = Depends(require_
     try:
         config = get_config()
         volume_service = get_volume_service(config)
+        task_queue = get_task_queue()
         
         detail = volume_service.get_volume_detail(request.pool, request.volume_name)
         if detail is None:
@@ -290,12 +292,28 @@ async def delete_volume(request: DeleteRequest, session: dict = Depends(require_
                 "require_confirmation": True
             }
 
-        success = volume_service.delete_volume(request.pool, request.volume_name)
-        
-        if not success:
-            raise HTTPException(status_code=400, detail="Failed to delete volume")
-        
-        return {"status": "ok", "message": "Volume deleted"}
+        task_id = task_queue.add_task(
+            task_type="delete",
+            pool=request.pool,
+            volume_name=request.volume_name
+        )
+
+        task_queue.start_task(task_id)
+        import threading
+        def _delete():
+            try:
+                success = volume_service.delete_volume(request.pool, request.volume_name)
+                if not success:
+                    task_queue.complete_task(task_id, success=False, error="Failed to delete volume")
+                else:
+                    task_queue.complete_task(task_id, success=True)
+            except Exception as exc:
+                task_queue.complete_task(task_id, success=False, error=str(exc))
+
+        thread = threading.Thread(target=_delete, daemon=True)
+        thread.start()
+
+        return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type="delete")
     
     except HTTPException:
         raise
@@ -315,9 +333,10 @@ async def restore_backup(request: RestoreRequest, session: dict = Depends(requir
 
         task_id = task_queue.add_task(
             task_type="restore",
-            source_pool=request.backup_pool,
-            source_volume=request.backup_file,
+            backup_pool=request.backup_pool,
+            backup_file=request.backup_file,
             dest_pool=request.dest_pool,
+            dest_volume_name=request.dest_volume,
             verify=True
         )
 
@@ -334,7 +353,7 @@ async def restore_backup(request: RestoreRequest, session: dict = Depends(requir
         thread = threading.Thread(target=_restore, daemon=True)
         thread.start()
 
-        return TaskResponse(task_id=task_id, status="pending", progress_percent=0)
+        return TaskResponse(task_id=task_id, status="pending", task_type="restore", progress_percent=0)
     except HTTPException:
         raise
     except Exception as e:
@@ -363,6 +382,46 @@ async def create_pool(request: PoolCreateRequest, session: dict = Depends(requir
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/api/tasks", response_model=TasksListResponse)
+async def list_tasks(session: dict = Depends(require_auth)):
+    """List persisted task history."""
+    try:
+        task_queue = get_task_queue()
+        tasks = [
+            TaskProgressResponse(
+                task_id=task["task_id"],
+                status=task["status"],
+                task_type=task.get("type"),
+                progress_percent=task.get("progress_percent", 0),
+                current_operation=task.get("current_operation"),
+                elapsed_seconds=task.get("elapsed_seconds", 0),
+                estimated_remaining_seconds=task.get("estimated_remaining_seconds"),
+                error=task.get("error"),
+                params=task.get("params", {})
+            )
+            for task in task_queue.tasks.values()
+        ]
+        sorted_tasks = sorted(task_queue.tasks.values(), key=lambda item: item.get("created_at", 0), reverse=True)
+        tasks = [
+            TaskProgressResponse(
+                task_id=item["task_id"],
+                status=item["status"],
+                task_type=item.get("type"),
+                progress_percent=item.get("progress_percent", 0),
+                current_operation=item.get("current_operation"),
+                elapsed_seconds=item.get("elapsed_seconds", 0),
+                estimated_remaining_seconds=item.get("estimated_remaining_seconds"),
+                error=item.get("error"),
+                params=item.get("params", {})
+            )
+            for item in sorted_tasks
+        ]
+        return TasksListResponse(tasks=tasks)
+    except Exception as e:
+        print(f"[ERROR] Task list error: {e}", flush=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/api/refresh")
 async def refresh(session: dict = Depends(require_auth)):
     """Refresh pools (re-read from disk)."""
@@ -372,6 +431,37 @@ async def refresh(session: dict = Depends(require_auth)):
     except Exception as e:
         print(f"[ERROR] Refresh error: {e}", flush=True)
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/api/debug/cleanup")
+async def cleanup_debug(session: dict = Depends(require_auth)):
+    """Delete persisted task data and lock files for troubleshooting."""
+    try:
+        task_queue = get_task_queue()
+        deleted_tasks_file = 0
+        deleted_lock_files = 0
+
+        if task_queue.tasks_file.exists():
+            task_queue.tasks_file.unlink()
+            deleted_tasks_file = 1
+
+        if task_queue.locks_dir.exists():
+            for lock_file in task_queue.locks_dir.glob("*.lock"):
+                try:
+                    lock_file.unlink()
+                    deleted_lock_files += 1
+                except Exception:
+                    pass
+
+        return {
+            "status": "ok",
+            "message": "Cleanup completed",
+            "deleted_tasks_file": deleted_tasks_file,
+            "deleted_lock_files": deleted_lock_files
+        }
+    except Exception as e:
+        print(f"[ERROR] Cleanup error: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/api/task/{task_id}/progress", response_model=TaskProgressResponse)
@@ -387,11 +477,13 @@ async def get_task_progress(task_id: str, session: dict = Depends(require_auth))
         return TaskProgressResponse(
             task_id=task["task_id"],
             status=task["status"],
+            task_type=task.get("type"),
             progress_percent=task.get("progress_percent", 0),
             current_operation=task.get("current_operation"),
             elapsed_seconds=task.get("elapsed_seconds", 0),
             estimated_remaining_seconds=task.get("estimated_remaining_seconds"),
-            error=task.get("error")
+            error=task.get("error"),
+            params=task.get("params", {})
         )
     
     except HTTPException:

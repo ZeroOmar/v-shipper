@@ -1,6 +1,7 @@
 /* Main application JavaScript */
 
 const API_BASE = '/api';
+const THEME_KEY = 'vshipper_theme';
 let currentUser = null;
 let sessionId = null;
 let refreshInterval = null;
@@ -22,6 +23,7 @@ const MAX_LOAD_FAILURES = 3; // Logout after 3 consecutive failures
 document.addEventListener('DOMContentLoaded', () => {
     sessionId = localStorage.getItem('session_id');
     currentUser = localStorage.getItem('username');
+    loadTheme();
     checkAuthStatus();
 });
 
@@ -91,6 +93,7 @@ function showDashboard() {
     document.getElementById('loginScreen').classList.remove('active');
     document.getElementById('dashboard').classList.add('active');
     document.getElementById('currentUser').textContent = currentUser || 'admin';
+    loadTaskHistory();
     loadPools();
     startAutoRefresh();
 }
@@ -238,18 +241,21 @@ async function loadVolumesForPool(poolName) {
         };
         
         displayPools(Object.values(poolsCache));
-        displayVolumes(poolName, data.volumes);
+        displayVolumes(poolName, data.volumes, data.warnings || []);
         startVolumeSizePolling(poolName, data.volumes);
     } catch (error) {
         showError(`Failed to load volumes: ${error.message}`);
     }
 }
 
-function displayVolumes(poolName, volumes) {
+function displayVolumes(poolName, volumes, warnings = []) {
     const poolType = poolsCache[poolName]?.pool_type || 'local';
     const container = document.getElementById('volumesContainer');
     
     let html = `<h2>${poolName}</h2>`;
+    if (warnings.length > 0) {
+        html += `<div class="warning-banner">${warnings.map(w => `<div>${w}</div>`).join('')}</div>`;
+    }
     
     if (volumes.length === 0) {
         html += '<div class="placeholder"><p>No volumes found in this pool</p></div>';
@@ -257,7 +263,7 @@ function displayVolumes(poolName, volumes) {
         volumes.forEach(volume => {
             const sizeText = volume.size_loading
                 ? `<span class="loading-spinner" style="width: 14px; height: 14px; border-width: 2px;"></span> Calculating...`
-                : `${(volume.size_gb || 0).toFixed(2)} GB`;
+                : formatVolumeSize(volume.size_bytes, volume.size_gb);
             const created = volume.created_timestamp ? new Date(volume.created_timestamp * 1000).toLocaleDateString() : 'N/A';
             const backupCount = volume.backups && volume.backups.length > 0 ? volume.backups.length : 0;
             
@@ -307,7 +313,7 @@ function startVolumeSizePolling(poolName, volumes) {
                 return;
             }
 
-            displayVolumes(poolName, data.volumes);
+            displayVolumes(poolName, data.volumes, data.warnings || []);
 
             if (!data.volumes.some(volume => volume.size_loading)) {
                 clearInterval(volumeSizePollInterval);
@@ -345,13 +351,15 @@ function openMigrateModal(sourcePool, sourceVolume) {
             </select>
         </div>
         <div class="form-group">
-            <label>
-                <input type="checkbox" id="migrateVerify" checked> Verify migration
+            <label class="checkbox-label">
+                <input type="checkbox" id="migrateVerify" checked>
+                <span>Verify migration</span>
             </label>
         </div>
         <div class="form-group">
-            <label>
-                <input type="checkbox" id="migrateDelete"> Delete source after verification
+            <label class="checkbox-label">
+                <input type="checkbox" id="migrateDelete">
+                <span>Delete source after verification</span>
             </label>
         </div>
         <button class="btn success" style="width: 100%;" onclick="startMigration('${sourcePool}', '${sourceVolume}')">Start Migration</button>
@@ -424,8 +432,9 @@ function openBackupModal(sourcePool, sourceVolume) {
             </select>
         </div>
         <div class="form-group">
-            <label>
-                <input type="checkbox" id="backupVerify" checked> Verify backup
+            <label class="checkbox-label">
+                <input type="checkbox" id="backupVerify" checked>
+                <span>Verify backup</span>
             </label>
         </div>
         <button class="btn success" style="width: 100%;" onclick="startBackup('${sourcePool}', '${sourceVolume}')">Start Backup</button>
@@ -559,10 +568,11 @@ function openDeleteModal(pool, volume) {
             <label>Volume</label>
             <input type="text" value="${volume}" disabled>
         </div>
-        <label>
-            <input type="checkbox" id="deleteConfirm"> Yes, I want to delete this volume
+        <label class="checkbox-label">
+            <input type="checkbox" id="deleteConfirm">
+            <span>Yes, I want to delete this volume</span>
         </label>
-        <button class="btn danger" style="width: 100%; margin-top: 15px;" onclick="confirmDelete('${pool}', '${volume}')">Delete</button>
+        <button class="btn danger" id="confirmDeleteButton" style="width: 100%; margin-top: 15px;" onclick="confirmDelete('${pool}', '${volume}')">Delete</button>
     `;
     
     openModal('deleteModal');
@@ -574,6 +584,12 @@ async function confirmDelete(pool, volume) {
     if (!confirmed) {
         showError('Please confirm deletion');
         return;
+    }
+
+    const deleteButton = document.getElementById('confirmDeleteButton');
+    if (deleteButton) {
+        deleteButton.disabled = true;
+        deleteButton.textContent = 'Deleting...';
     }
     
     try {
@@ -594,8 +610,18 @@ async function confirmDelete(pool, volume) {
                 showError(data.message || 'Deletion requires confirmation');
                 return;
             }
+
             closeModal('deleteModal');
-            showSuccess('Volume deleted successfully');
+            addOrUpdateTaskHistory({
+                task_id: data.task_id,
+                status: 'pending',
+                current_operation: 'Deleting volume...',
+                progress_percent: 0,
+                elapsed_seconds: 0,
+                estimated_remaining_seconds: null
+            });
+            renderTaskHistory();
+            showTaskProgress(data.task_id);
             loadPools();
             if (activePool) {
                 loadVolumesForPool(activePool);
@@ -605,6 +631,11 @@ async function confirmDelete(pool, volume) {
         }
     } catch (error) {
         showError(`Delete error: ${error.message}`);
+    } finally {
+        if (deleteButton) {
+            deleteButton.disabled = false;
+            deleteButton.textContent = 'Delete';
+        }
     }
 }
 
@@ -674,12 +705,14 @@ function addOrUpdateTaskHistory(task) {
     const index = taskHistory.findIndex(entry => entry.task_id === task.task_id);
     const newEntry = {
         task_id: task.task_id,
+        task_type: task.task_type || task.type || 'operation',
         current_operation: task.current_operation || 'Processing...',
         progress_percent: task.progress_percent || 0,
         status: task.status || 'pending',
         elapsed_seconds: task.elapsed_seconds || 0,
         estimated_remaining_seconds: task.estimated_remaining_seconds || null,
-        error: task.error || null
+        error: task.error || null,
+        params: task.params || {}
     };
     
     if (index === -1) {
@@ -691,6 +724,32 @@ function addOrUpdateTaskHistory(task) {
     taskHistory = taskHistory.slice(0, MAX_TASK_HISTORY);
 }
 
+function getTaskTargetLabel(task) {
+    const params = task.params || {};
+    if (task.task_type === 'delete') {
+        return params.volume_name || params.source_volume || params.volume || 'Delete operation';
+    }
+    if (task.task_type === 'backup') {
+        if (params.source_volume) {
+            return `Backup ${params.source_volume} to ${params.backup_pool || 'backup pool'}`;
+        }
+        return 'Backup task';
+    }
+    if (task.task_type === 'migrate') {
+        if (params.source_volume) {
+            return `Migrate ${params.source_volume} from ${params.source_pool || 'unknown'} to ${params.dest_pool || 'unknown'}`;
+        }
+        return 'Migration task';
+    }
+    if (task.task_type === 'restore') {
+        const backupFile = params.backup_file || params.source_volume;
+        return backupFile
+            ? `Restore ${backupFile} to ${params.dest_volume_name || params.dest_volume || 'destination'}`
+            : 'Restore task';
+    }
+    return params.source_volume || params.volume_name || params.backup_file || task.current_operation || 'Task';
+}
+
 function renderTaskHistory() {
     const progressPanel = document.getElementById('progressPanel');
     
@@ -700,10 +759,12 @@ function renderTaskHistory() {
     }
     
     const items = taskHistory.map(task => {
+        const targetLabel = getTaskTargetLabel(task);
         return `
             <div class="task-history-item">
                 <div class="task-status ${task.status}">${task.status.toUpperCase()}</div>
-                <div class="progress-text">${task.current_operation}</div>
+                <div class="progress-text"><strong>${task.task_type || 'Task'}</strong>: ${task.current_operation}</div>
+                <div class="progress-text task-target">${targetLabel}</div>
                 <div class="progress-bar">
                     <div class="progress-fill" style="width: ${task.progress_percent}%"></div>
                 </div>
@@ -716,11 +777,68 @@ function renderTaskHistory() {
     progressPanel.innerHTML = items;
 }
 
+function formatVolumeSize(sizeBytes, fallbackGb = 0) {
+    if ((typeof sizeBytes !== 'number' || isNaN(sizeBytes) || sizeBytes < 0) && fallbackGb > 0) {
+        return formatVolumeSize(Math.round(fallbackGb * 1024 ** 3));
+    }
+
+    if (typeof sizeBytes !== 'number' || isNaN(sizeBytes) || sizeBytes < 0) {
+        return '0.00 GB';
+    }
+
+    if (sizeBytes === 0) {
+        if (fallbackGb > 0) {
+            return formatVolumeSize(Math.round(fallbackGb * 1024 ** 3));
+        }
+        return '0.00 GB';
+    }
+
+    const units = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    let value = sizeBytes;
+    let unitIndex = 0;
+
+    while (value >= 1024 && unitIndex < units.length - 1) {
+        value /= 1024;
+        unitIndex += 1;
+    }
+
+    return `${value.toFixed(2)} ${units[unitIndex]}`;
+}
+
+async function loadTaskHistory() {
+    if (!sessionId) return;
+
+    try {
+        const response = await fetch(`${API_BASE}/tasks?session_id=${sessionId}`);
+        const data = await response.json();
+
+        if (!response.ok) {
+            return;
+        }
+
+        taskHistory = data.tasks.map(task => ({
+            task_id: task.task_id,
+            task_type: task.task_type || 'operation',
+            current_operation: task.current_operation || 'Processing...',
+            progress_percent: task.progress_percent || 0,
+            status: task.status || 'pending',
+            elapsed_seconds: task.elapsed_seconds || 0,
+            estimated_remaining_seconds: task.estimated_remaining_seconds || null,
+            error: task.error || null,
+            params: task.params || {}
+        }));
+        taskHistory = taskHistory.slice(0, MAX_TASK_HISTORY);
+        renderTaskHistory();
+    } catch (error) {
+        console.warn('Failed to load task history:', error.message);
+    }
+}
+
 // ============ Helper Functions ============
 
 async function loadPoolsForSelect(selectId) {
     try {
-        const response = await fetch(`${API_BASE}/pools`);
+        const response = await fetch(`${API_BASE}/pools?session_id=${sessionId}`);
         const data = await response.json();
         
         const select = document.getElementById(selectId);
@@ -741,7 +859,7 @@ async function loadPoolsForSelect(selectId) {
 
 async function loadBackupPoolsForSelect(selectId) {
     try {
-        const response = await fetch(`${API_BASE}/pools`);
+        const response = await fetch(`${API_BASE}/pools?session_id=${sessionId}`);
         const data = await response.json();
         
         const select = document.getElementById(selectId);
@@ -762,6 +880,61 @@ async function loadBackupPoolsForSelect(selectId) {
 
 function openModal(modalId) {
     document.getElementById(modalId).classList.add('active');
+}
+
+function loadTheme() {
+    const savedTheme = localStorage.getItem(THEME_KEY) || 'system';
+    if (savedTheme === 'system') {
+        const darkMode = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        applyTheme(darkMode ? 'dark' : 'light');
+    } else {
+        applyTheme(savedTheme);
+    }
+    updateThemeButton(savedTheme);
+}
+
+function toggleTheme() {
+    const current = localStorage.getItem(THEME_KEY) || 'system';
+    const next = current === 'system' ? 'light' : current === 'light' ? 'dark' : 'system';
+    localStorage.setItem(THEME_KEY, next);
+    if (next === 'system') {
+        const darkMode = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        applyTheme(darkMode ? 'dark' : 'light');
+    } else {
+        applyTheme(next);
+    }
+    updateThemeButton(next);
+}
+
+function applyTheme(theme) {
+    document.body.classList.remove('light', 'dark');
+    document.body.classList.add(theme === 'dark' ? 'dark' : 'light');
+}
+
+function updateThemeButton(theme) {
+    const button = document.getElementById('themeToggleButton');
+    if (button) {
+        button.textContent = `🎨 ${theme.charAt(0).toUpperCase() + theme.slice(1)}`;
+    }
+}
+
+async function runTroubleshootCleanup() {
+    try {
+        const response = await fetch(`${API_BASE}/debug/cleanup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await response.json();
+
+        if (response.ok) {
+            showSuccess(`Cleanup complete: ${data.deleted_tasks_file} tasks file, ${data.deleted_lock_files} lock files removed`);
+            loadTaskHistory();
+        } else {
+            showError(data.detail || 'Cleanup failed');
+        }
+    } catch (error) {
+        showError(`Cleanup error: ${error.message}`);
+    }
 }
 
 function closeModal(modalId) {

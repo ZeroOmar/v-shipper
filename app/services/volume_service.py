@@ -84,60 +84,79 @@ class VolumeService:
                 usage_percent=0
             )
     
-    def list_volumes(self, pool_name: str) -> List[VolumeInfo]:
+    def list_volumes(self, pool_name: str) -> (List[VolumeInfo], List[str]):
         """List all volumes in a pool."""
         pool = self.get_pool_by_name(pool_name)
         
         if not pool:
             print(f"[ERROR] Pool {pool_name} not found", flush=True)
-            return []
+            return [], []
         
         pool_path = Path(pool["path"])
         volumes = []
         missing_sizes = []
+        warnings = []
         
         try:
             if not pool_path.exists():
                 print(f"[WARNING] Pool path {pool_path} does not exist", flush=True)
-                return []
+                return [], []
             
             for volume_item in pool_path.iterdir():
                 if volume_item.name.startswith('.'):
                     continue
 
-                if volume_item.is_dir() or volume_item.is_file():
-                    size_loading = False
+                if pool.get("type") == "backup":
+                    if volume_item.is_file() and volume_item.name.endswith((".tar.gz", ".tgz")):
+                        size_bytes = volume_item.stat().st_size
+                        size_gb = size_bytes / (1024 ** 3)
+                        stat_info = volume_item.stat()
+                        created_timestamp = int(stat_info.st_ctime)
+                        volumes.append(VolumeInfo(
+                            name=volume_item.name,
+                            path=str(volume_item),
+                            size_gb=size_gb,
+                            size_bytes=size_bytes,
+                            size_loading=False,
+                            created_timestamp=created_timestamp,
+                            backups=[]
+                        ))
+                    else:
+                        warnings.append(f"Ignored unsupported backup item: {volume_item.name}")
+                else:
                     if volume_item.is_dir():
-                        cached_size = self._get_cached_size(pool_name, volume_item.name)
-                        if cached_size is None:
-                            size_gb = 0.0
+                        size_loading = False
+                        size_bytes = 0
+                        cached_bytes = self._get_cached_size(pool_name, volume_item.name)
+                        if cached_bytes is None:
                             size_loading = True
                             missing_sizes.append(volume_item.name)
                         else:
-                            size_gb = cached_size
+                            size_bytes = cached_bytes
+
+                        size_gb = size_bytes / (1024 ** 3)
+                        stat_info = volume_item.stat()
+                        created_timestamp = int(stat_info.st_ctime)
+                        backups = self._find_backups(volume_item.name)
+
+                        volumes.append(VolumeInfo(
+                            name=volume_item.name,
+                            path=str(volume_item),
+                            size_gb=size_gb,
+                            size_bytes=size_bytes,
+                            size_loading=size_loading,
+                            created_timestamp=created_timestamp,
+                            backups=backups
+                        ))
                     else:
-                        size_gb = volume_item.stat().st_size / (1024 ** 3)
-
-                    stat_info = volume_item.stat()
-                    created_timestamp = int(stat_info.st_ctime)
-
-                    backups = [] if pool.get("type") == "backup" else self._find_backups(volume_item.name)
-
-                    volumes.append(VolumeInfo(
-                        name=volume_item.name,
-                        path=str(volume_item),
-                        size_gb=round(size_gb, 2),
-                        size_loading=size_loading,
-                        created_timestamp=created_timestamp,
-                        backups=backups
-                    ))
+                        warnings.append(f"Ignored non-volume item: {volume_item.name}")
         except Exception as e:
             print(f"[ERROR] Failed to list volumes in {pool_name}: {e}", flush=True)
 
         if missing_sizes:
             self._start_volume_size_refresh(pool_name, pool_path, missing_sizes)
         
-        return sorted(volumes, key=lambda v: v.name)
+        return sorted(volumes, key=lambda v: v.name), warnings
     
     def rename_volume(self, pool_name: str, old_name: str, new_name: str) -> bool:
         """Rename a volume."""
@@ -213,7 +232,11 @@ class VolumeService:
                 return None
             
             stat_info = volume_path.stat()
-            size_gb = self._get_dir_size(volume_path) / (1024 ** 3) if volume_path.is_dir() else volume_path.stat().st_size / (1024 ** 3)
+            if volume_path.is_dir():
+                size_bytes = self._get_dir_size(volume_path)
+            else:
+                size_bytes = volume_path.stat().st_size
+            size_gb = size_bytes / (1024 ** 3)
             created_timestamp = int(stat_info.st_ctime)
             permissions = oct(stat_info.st_mode)[-3:]
             backups = [] if pool.get("type") == "backup" else self._find_backups(volume_name)
@@ -222,7 +245,8 @@ class VolumeService:
             return {
                 "name": volume_name,
                 "pool": pool_name,
-                "size_gb": round(size_gb, 2),
+                "size_gb": size_gb,
+                "size_bytes": size_bytes,
                 "created_timestamp": created_timestamp,
                 "backups": backups,
                 "permissions": permissions,
@@ -257,17 +281,17 @@ class VolumeService:
         
         return backups
 
-    def _get_cached_size(self, pool_name: str, volume_name: str) -> Optional[float]:
-        """Return cached size for a volume."""
+    def _get_cached_size(self, pool_name: str, volume_name: str) -> Optional[int]:
+        """Return cached size in bytes for a volume."""
         with self.size_lock:
             return self.size_cache.get(pool_name, {}).get(volume_name)
 
-    def _cache_volume_size(self, pool_name: str, volume_name: str, size_gb: float):
-        """Cache calculated volume size."""
+    def _cache_volume_size(self, pool_name: str, volume_name: str, size_bytes: int):
+        """Cache calculated volume size in bytes."""
         with self.size_lock:
             if pool_name not in self.size_cache:
                 self.size_cache[pool_name] = {}
-            self.size_cache[pool_name][volume_name] = size_gb
+            self.size_cache[pool_name][volume_name] = size_bytes
 
     def _start_volume_size_refresh(self, pool_name: str, pool_path: Path, volume_names: List[str]):
         """Start a background thread to compute missing volume sizes."""
@@ -296,7 +320,7 @@ class VolumeService:
                 else:
                     size_bytes = volume_path.stat().st_size
 
-                self._cache_volume_size(pool_name, volume_name, round(size_bytes / (1024 ** 3), 2))
+                self._cache_volume_size(pool_name, volume_name, size_bytes)
             except Exception as e:
                 print(f"[WARNING] Failed to refresh size for {volume_name}: {e}", flush=True)
 

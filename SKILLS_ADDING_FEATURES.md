@@ -38,12 +38,12 @@ description: Skills for adding new features to v-shipper
   - `volume_service.py` — volume metadata, discovery, rename/delete
   - `migration_service.py` — rsync, verification, lockfiles
   - `backup_service.py` — tar, checksums, archive operations
-  - `ssh_service.py` — SSH-specific operations
+  - `ssh_service.py` — deprecated legacy SSH support
   - `task_queue.py` — task scheduling and progress tracking
 - Always:
   - Use lockfiles for exclusive operations (import from `migration_service`)
   - Log to stdout only (use `print()` or Python `logging` with StreamHandler)
-  - Handle SSH tunneling via `ssh_service.execute_remote_command()` for remote pools
+  - Remote pools are mounted and accessed as local paths; avoid SSH-specific code paths
   - Return progress updates in standardized format
 
 **Example**:
