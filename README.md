@@ -5,22 +5,23 @@ A stateless, containerized Python + FastAPI application for managing and migrati
 ## Features
 
 - 🎯 **Web UI** - Modern, responsive dashboard with login authentication
-- 📁 **Pool Management** - Support for local, remote SSH, and NFS-mounted pools
+- 📁 **Pool Management** - Support for local and remote mounted pools
 - 🚀 **Volume Migration** - Rsync-based migration with permission preservation
 - 💾 **Backup Operations** - Archive volumes to backup pools with verification
 - 🔒 **Exclusive Locks** - Prevent concurrent operations on same volume
 - 📊 **Disk Usage Stats** - Real-time pool utilization and available space
-- 📈 **Progress Tracking** - Real-time progress updates for long-running operations
-- 🔐 **SSH Support** - Secure remote access to Docker hosts
+- 📈 **Progress Tracking** - Real-time progress updates for long-running operations with background size calculation
 - 🐳 **Containerized** - Alpine Linux, minimal attack surface (~350-400MB)
 - 📝 **Stateless** - No database, all state in-memory, clean restart
 - 📤 **Logs to stdout** - All logs sent to stdout for Docker log collection
+- 🔄 **Crash Recovery** - Persists task state and cleans up orphaned temp directories
 
 ## Requirements
 
 - Docker & Docker Compose
 - Python 3.11+ (for local development)
-- SSH access to remote Docker hosts (if using remote pools)
+- `rsync` available on all hosts (for migrations)
+- `tar` available (for backup/restore)
 
 ## Configuration
 
@@ -30,20 +31,20 @@ Configuration is provided via the `VOLUME_MANAGER_CONFIG` environment variable a
 docker_hosts:
   - name: host1
     ip: 10.0.0.1
-    pool: /config/docker_pools/host1
-    pool_type: local              # or 'remote'
-    ssh_user: admin               # (remote only)
-    ssh_key: <base64_ssh_key>     # (remote only)
+    pool: /var/lib/docker/volumes
+    pool_type: local              # or 'remote' for NFS/mounted remote paths
 
 backup_pools:
   - name: backup1
-    path: /config/backup_pools/backup1
+    path: /mnt/backups
 
 web_ui:
-  port: 80
+  port: 8000
   admin_user: admin
-  admin_password: <base64_password>
+  admin_password: YWRtaW4=       # base64 encoded password
 ```
+
+**Note**: `pool_type: remote` is for NFS or other remote-mounted filesystems. SSH/remote access is no longer supported. Mount remote volumes using standard filesystem mount options and mark them as `remote` for UI labeling.
 
 ### Base64 Encoding
 
@@ -53,8 +54,7 @@ To encode secrets for the configuration:
 # Encode password
 echo -n "mysecurepassword" | base64
 
-# Encode SSH key
-base64 < ~/.ssh/id_rsa
+# Example: admin password "admin" encodes to "YWRtaW4="
 ```
 
 ## Quick Start
@@ -64,7 +64,7 @@ base64 < ~/.ssh/id_rsa
 1. Clone repository
 2. Create local directories for testing:
    ```bash
-   mkdir -p mnt/pools/local mnt/pools/backup mnt/backups
+   mkdir -p test_volumes/host1 test_volumes/host2 test_backups
    ```
 
 3. Start the application:
@@ -75,7 +75,42 @@ base64 < ~/.ssh/id_rsa
 4. Access the web UI:
    - **URL**: http://localhost:8000
    - **Username**: admin
-   - **Password**: admin (from docker-compose.yml: `YWRtaW4=` base64 decoded)
+   - **Password**: admin (from docker-compose.yml)
+
+### Local Development (Python)
+
+1. Create virtual environment:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+2. Set configuration:
+   ```bash
+   export VOLUME_MANAGER_CONFIG='
+   docker_hosts:
+     - name: local
+       ip: localhost
+       pool: ./test_volumes/host1
+       pool_type: local
+   backup_pools:
+     - name: backup
+       path: ./test_backups
+   web_ui:
+     port: 8000
+     admin_user: admin
+     admin_password: YWRtaW4=
+   '
+   ```
+
+3. Run development server:
+   ```bash
+   # Using run_dev.sh to exclude volume directories from auto-reload
+   bash run_dev.sh
+   ```
+
+4. Access at http://localhost:8000
 
 ### Docker (Production)
 
@@ -83,17 +118,14 @@ base64 < ~/.ssh/id_rsa
 # Build image
 docker build -t v-shipper:latest .
 
-# Encode your configuration
-export CONFIG=$(cat config.yaml | base64)
-
 # Run container
 docker run -d \
   --name v-shipper \
   -p 80:80 \
   -e "VOLUME_MANAGER_CONFIG=$(cat <<'EOF'
 docker_hosts:
-  - name: prod-host
-    ip: 10.0.0.100
+  - name: prod-pool
+    ip: localhost
     pool: /mnt/docker_volumes
     pool_type: local
 backup_pools:
@@ -107,7 +139,6 @@ EOF
 )" \
   -v /var/lib/docker/volumes:/mnt/docker_volumes:ro \
   -v /mnt/backups:/mnt/backups:rw \
-  -v /var/run/docker.sock:/var/run/docker.sock:ro \
   v-shipper:latest
 ```
 
@@ -188,16 +219,49 @@ curl -b cookies.txt http://localhost/api/task/[task-id]/progress
 **Development** (docker-compose):
 - Credentials in plaintext (for testing only)
 - No HTTPS
-- Docker socket mounted for container access
+- File-based reload on all changes
 
 **Production** (deployment):
 - Use strong passwords, base64 encoded
 - Deploy behind reverse proxy with HTTPS (nginx, Traefik)
-- Use Docker Secrets for credential management
-- Restrict SSH key permissions (600)
+- Restrict access to management endpoints
 - Run on isolated network
-- Use read-only Docker socket if possible
 - Enable SELinux/AppArmor if available
+
+### Remote Pools
+
+Remote pools are accessed via standard filesystem mount (NFS, CIFS, etc.), not SSH. Mount remote storage before starting the application:
+
+```bash
+# Example: NFS mount
+mount -t nfs 10.0.0.1:/export/volumes /mnt/remote_volumes
+
+# Then reference in config
+docker_hosts:
+  - name: remote-nfs
+    ip: 10.0.0.1
+    pool: /mnt/remote_volumes
+    pool_type: remote    # UI label only; works like local pools
+```
+
+## Performance Notes
+
+### Async Volume Size Calculation
+
+When listing volumes in a pool, if directory sizes are not yet cached, the API returns immediately with `size_loading: true` for those volumes. A background thread then calculates directory sizes in parallel. The frontend polls `/api/volumes` again while sizes are being computed, showing "Calculating..." in the UI until complete.
+
+This prevents the initial pool load from freezing on large volumes.
+
+### Development Mode
+
+When running locally with `bash run_dev.sh`, the uvicorn server only watches changes in the `app/` directory. This prevents auto-reload when rsync/tar operations write files to volume directories.
+
+### Crash Recovery
+
+The application automatically:
+1. **Persists task state** to `/tmp/vshipper_tasks.json` so progress can be recovered across restarts
+2. **Marks incomplete tasks as failed** with a clear error message if the server was restarted mid-operation
+3. **Cleans up orphaned `.restore_temp_*` directories** from failed restore operations on startup
 - Keep logs securely stored
 
 ### Best Practices
@@ -290,7 +354,11 @@ export VOLUME_MANAGER_CONFIG='
 docker_hosts:
   - name: local
     ip: localhost
-    pool: ./test_volumes
+    pool: ./test_volumes/host1
+    pool_type: local
+  - name: local2
+    ip: localhost
+    pool: ./test_volumes/host2
     pool_type: local
 backup_pools:
   - name: backup

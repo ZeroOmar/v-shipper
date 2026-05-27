@@ -1,5 +1,7 @@
 """Backup service for volume backups."""
 
+import datetime
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -34,7 +36,8 @@ class BackupService:
             self.task_queue.start_task(task_id)
             
             source_path = f"{source_pool['path']}/{source_volume_name}"
-            backup_path = f"{backup_pool['path']}/{source_volume_name}_backup_{int(time.time())}.tar.gz"
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_path = f"{backup_pool['path']}/{source_volume_name}_backup_{timestamp}.tar.gz"
             
             # Update progress
             self.task_queue.update_progress(task_id, {
@@ -128,7 +131,105 @@ class BackupService:
         except Exception as e:
             print(f"[ERROR] Backup verification error: {e}", flush=True)
             return False
+    def restore_backup(self, task_id: str, backup_pool_name: str, backup_file: str,
+                       dest_pool_name: str, dest_volume_name: str) -> bool:
+        """Restore a backup archive into a destination pool."""
+        backup_pool = self.volume_service.get_backup_pool_by_name(backup_pool_name)
+        dest_pool = self.volume_service.get_pool_by_name(dest_pool_name)
 
+        if not backup_pool or not dest_pool:
+            error_msg = "Backup pool or destination pool not found"
+            self.task_queue.complete_task(task_id, success=False, error=error_msg)
+            return False
+
+        backup_path = Path(backup_pool['path']) / backup_file
+        dest_path = Path(dest_pool['path']) / dest_volume_name
+
+        if not backup_path.exists():
+            error_msg = "Backup file not found"
+            self.task_queue.complete_task(task_id, success=False, error=error_msg)
+            return False
+
+        if dest_path.exists():
+            error_msg = "Restore destination already exists"
+            self.task_queue.complete_task(task_id, success=False, error=error_msg)
+            return False
+
+        lock_file = self.task_queue.create_lockfile(dest_pool_name, dest_volume_name)
+
+        try:
+            self.task_queue.start_task(task_id)
+            self.task_queue.update_progress(task_id, {
+                "current_operation": f"Restoring backup {backup_file} to {dest_pool_name}/{dest_volume_name}",
+                "progress_percent": 20
+            })
+
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Extract into a temporary folder inside the destination pool to guarantee space
+            temp_extract_dir = Path(dest_pool['path']) / f".restore_temp_{int(time.time())}"
+            if temp_extract_dir.exists():
+                shutil.rmtree(temp_extract_dir)
+            temp_extract_dir.mkdir(parents=True, exist_ok=True)
+
+            cmd = f"tar -xzf {backup_path} -C {temp_extract_dir}"
+            process = subprocess.Popen(
+                cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            stdout, stderr = process.communicate()
+            if process.returncode != 0:
+                error_msg = f"Restore failed: {stderr.strip()}"
+                print(f"[ERROR] {error_msg}", flush=True)
+                self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                shutil.rmtree(temp_extract_dir, ignore_errors=True)
+                return False
+
+            # Find the extracted volume directory and rename it to destination
+            extracted_items = [item for item in temp_extract_dir.iterdir() if item.name != '.' and item.name != '..']
+            if not extracted_items:
+                error_msg = "Restore failed: backup archive contained no files"
+                self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                shutil.rmtree(temp_extract_dir, ignore_errors=True)
+                return False
+
+            source_vol = extracted_items[0]
+            if source_vol.is_dir():
+                source_vol.rename(dest_path)
+            else:
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                source_vol.rename(dest_path)
+
+            # Clean up temp directory if it is now empty
+            shutil.rmtree(temp_extract_dir, ignore_errors=True)
+
+            self.task_queue.update_progress(task_id, {
+                "current_operation": "Verifying restore",
+                "progress_percent": 80
+            })
+
+            if not self._verify_backup(str(backup_path)):
+                error_msg = "Restore verification failed"
+                self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                return False
+
+            self.task_queue.update_progress(task_id, {
+                "current_operation": "Restore complete",
+                "progress_percent": 100
+            })
+            self.task_queue.complete_task(task_id, success=True)
+            return True
+        except Exception as e:
+            error_msg = f"Restore error: {e}"
+            print(f"[ERROR] {error_msg}", flush=True)
+            self.task_queue.complete_task(task_id, success=False, error=error_msg)
+            return False
+        finally:
+            self.task_queue.remove_lockfile(lock_file)
 
 # Global backup service instance
 _backup_service = None

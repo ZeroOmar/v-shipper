@@ -36,10 +36,29 @@
         </header>
 
         <div class="container">
-            <!-- Pools Section -->
-            <div class="section">
-                <h2>📁 Storage Pools</h2>
-                <div id="poolsList"></div>
+            <div class="main-layout">
+                <!-- Left sidebar: Pools -->
+                <div class="pools-sidebar">
+                    <h2>📁 Storage Pools</h2>
+                    <div id="poolsList"></div>
+                </div>
+
+                <!-- Center: Volumes -->
+                <div class="volumes-section">
+                    <div id="volumesContainer">
+                        <div class="placeholder">
+                            <p>Select a pool to view volumes</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right sidebar: Task Progress -->
+                <div class="progress-sidebar">
+                    <h3>📊 Tasks</h3>
+                    <div id="progressPanel">
+                        <div class="placeholder-text">No active tasks</div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -85,6 +104,7 @@
         </div>
     </div>
 
+    <div id="toastContainer" class="toast-container"></div>
     <script src="/static/main.js"></script>
 </body>
 </html>

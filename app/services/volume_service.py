@@ -4,6 +4,7 @@ import os
 import shutil
 import time
 from pathlib import Path
+from threading import Lock, Thread
 from typing import List, Dict, Optional
 from app.models import VolumeInfo, PoolStats
 from app.services.task_queue import get_task_queue
@@ -15,6 +16,9 @@ class VolumeService:
     def __init__(self, config):
         self.config = config
         self.task_queue = get_task_queue()
+        self.size_cache: Dict[str, Dict[str, float]] = {}
+        self.size_lock = Lock()
+        self.size_workers: Dict[str, Thread] = {}
     
     def get_pool_by_name(self, pool_name: str) -> Optional[Dict]:
         """Get pool configuration by name."""
@@ -23,11 +27,17 @@ class VolumeService:
                 return {
                     "name": host.name,
                     "path": host.pool,
-                    "type": host.pool_type,
-                    "ip": host.ip,
-                    "ssh_user": host.ssh_user,
-                    "ssh_key": host.ssh_key
+                    "type": host.pool_type
                 }
+
+        for backup in self.config.backup_pools:
+            if backup.name == pool_name:
+                return {
+                    "name": backup.name,
+                    "path": backup.path,
+                    "type": "backup"
+                }
+
         return None
     
     def get_backup_pool_by_name(self, pool_name: str) -> Optional[Dict]:
@@ -84,35 +94,48 @@ class VolumeService:
         
         pool_path = Path(pool["path"])
         volumes = []
+        missing_sizes = []
         
         try:
             if not pool_path.exists():
                 print(f"[WARNING] Pool path {pool_path} does not exist", flush=True)
                 return []
             
-            for volume_dir in pool_path.iterdir():
-                if volume_dir.is_dir() and not volume_dir.name.startswith('.'):
-                    size_gb = self._get_dir_size(volume_dir) / (1024 ** 3)
-                    
-                    # Get creation time (stat ctime)
-                    stat_info = volume_dir.stat()
+            for volume_item in pool_path.iterdir():
+                if volume_item.name.startswith('.'):
+                    continue
+
+                if volume_item.is_dir() or volume_item.is_file():
+                    size_loading = False
+                    if volume_item.is_dir():
+                        cached_size = self._get_cached_size(pool_name, volume_item.name)
+                        if cached_size is None:
+                            size_gb = 0.0
+                            size_loading = True
+                            missing_sizes.append(volume_item.name)
+                        else:
+                            size_gb = cached_size
+                    else:
+                        size_gb = volume_item.stat().st_size / (1024 ** 3)
+
+                    stat_info = volume_item.stat()
                     created_timestamp = int(stat_info.st_ctime)
-                    
-                    # Check for backups (simplified - check backup pools for this volume)
-                    backups = self._find_backups(volume_dir.name)
-                    
-                    # Get permissions
-                    permissions = oct(stat_info.st_mode)[-3:]
-                    
+
+                    backups = [] if pool.get("type") == "backup" else self._find_backups(volume_item.name)
+
                     volumes.append(VolumeInfo(
-                        name=volume_dir.name,
-                        path=str(volume_dir),
+                        name=volume_item.name,
+                        path=str(volume_item),
                         size_gb=round(size_gb, 2),
+                        size_loading=size_loading,
                         created_timestamp=created_timestamp,
                         backups=backups
                     ))
         except Exception as e:
             print(f"[ERROR] Failed to list volumes in {pool_name}: {e}", flush=True)
+
+        if missing_sizes:
+            self._start_volume_size_refresh(pool_name, pool_path, missing_sizes)
         
         return sorted(volumes, key=lambda v: v.name)
     
@@ -153,8 +176,12 @@ class VolumeService:
             if not volume_path.exists():
                 print(f"[ERROR] Volume {volume_name} not found", flush=True)
                 return False
-            
-            shutil.rmtree(volume_path)
+
+            if volume_path.is_dir():
+                shutil.rmtree(volume_path)
+            else:
+                volume_path.unlink()
+
             print(f"[INFO] Deleted volume {volume_name}", flush=True)
             return True
         except Exception as e:
@@ -186,10 +213,10 @@ class VolumeService:
                 return None
             
             stat_info = volume_path.stat()
-            size_gb = self._get_dir_size(volume_path) / (1024 ** 3)
+            size_gb = self._get_dir_size(volume_path) / (1024 ** 3) if volume_path.is_dir() else volume_path.stat().st_size / (1024 ** 3)
             created_timestamp = int(stat_info.st_ctime)
             permissions = oct(stat_info.st_mode)[-3:]
-            backups = self._find_backups(volume_name)
+            backups = [] if pool.get("type") == "backup" else self._find_backups(volume_name)
             locked = self.task_queue.is_volume_locked(pool_name, volume_name)
             
             return {
@@ -229,6 +256,49 @@ class VolumeService:
                         backups.append(backup_item.name)
         
         return backups
+
+    def _get_cached_size(self, pool_name: str, volume_name: str) -> Optional[float]:
+        """Return cached size for a volume."""
+        with self.size_lock:
+            return self.size_cache.get(pool_name, {}).get(volume_name)
+
+    def _cache_volume_size(self, pool_name: str, volume_name: str, size_gb: float):
+        """Cache calculated volume size."""
+        with self.size_lock:
+            if pool_name not in self.size_cache:
+                self.size_cache[pool_name] = {}
+            self.size_cache[pool_name][volume_name] = size_gb
+
+    def _start_volume_size_refresh(self, pool_name: str, pool_path: Path, volume_names: List[str]):
+        """Start a background thread to compute missing volume sizes."""
+        with self.size_lock:
+            existing_worker = self.size_workers.get(pool_name)
+            if existing_worker and existing_worker.is_alive():
+                return
+
+            def worker():
+                self._refresh_volume_sizes(pool_name, pool_path, volume_names)
+
+            thread = Thread(target=worker, daemon=True)
+            self.size_workers[pool_name] = thread
+            thread.start()
+
+    def _refresh_volume_sizes(self, pool_name: str, pool_path: Path, volume_names: List[str]):
+        """Compute sizes for a list of volumes in the background."""
+        for volume_name in volume_names:
+            volume_path = pool_path / volume_name
+            try:
+                if not volume_path.exists():
+                    continue
+
+                if volume_path.is_dir():
+                    size_bytes = self._get_dir_size(volume_path)
+                else:
+                    size_bytes = volume_path.stat().st_size
+
+                self._cache_volume_size(pool_name, volume_name, round(size_bytes / (1024 ** 3), 2))
+            except Exception as e:
+                print(f"[WARNING] Failed to refresh size for {volume_name}: {e}", flush=True)
 
 
 # Global volume service instance

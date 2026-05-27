@@ -1,11 +1,11 @@
 """Migration service for volume migrations."""
 
+import shutil
 import subprocess
 import time
 from pathlib import Path
 from typing import Optional
 from app.services.task_queue import get_task_queue
-from app.services.ssh_service import get_ssh_service
 
 
 class MigrationService:
@@ -15,7 +15,6 @@ class MigrationService:
         self.config = config
         self.volume_service = volume_service
         self.task_queue = get_task_queue()
-        self.ssh_service = get_ssh_service()
     
     def migrate_volume(self, task_id: str, source_pool_name: str, source_volume_name: str,
                       dest_pool_name: str, verify: bool = True, delete_source: bool = False) -> bool:
@@ -36,9 +35,15 @@ class MigrationService:
         try:
             self.task_queue.start_task(task_id)
             
-            source_path = f"{source_pool['path']}/{source_volume_name}"
+            source_path = f"{source_pool['path']}/{source_volume_name}/"
             dest_path = f"{dest_pool['path']}/{source_volume_name}"
-            
+
+            # Prevent overwriting an existing destination volume
+            if Path(dest_pool['path']).joinpath(source_volume_name).exists():
+                error_msg = "Destination volume already exists"
+                self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                return False
+
             # Update progress
             self.task_queue.update_progress(task_id, {
                 "current_operation": f"Migrating {source_volume_name} from {source_pool_name} to {dest_pool_name}",
@@ -46,9 +51,11 @@ class MigrationService:
             })
             
             # Execute rsync
-            if not self._rsync_volume(task_id, source_path, dest_path, source_pool, dest_pool):
-                error_msg = "Rsync failed"
+            rsync_success, rsync_error = self._rsync_volume(task_id, source_path, dest_path, source_pool, dest_pool)
+            if not rsync_success:
+                error_msg = rsync_error or "Rsync failed"
                 self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                self._cleanup_partial_destination(dest_path, dest_pool)
                 return False
             
             self.task_queue.update_progress(task_id, {
@@ -87,11 +94,9 @@ class MigrationService:
         
         finally:
             self.task_queue.remove_lockfile(lock_file)
-            self.ssh_service.close_all()
     
     def _rsync_volume(self, task_id: str, source_path: str, dest_path: str,
-                     source_pool: dict, dest_pool: dict) -> bool:
-        """Execute rsync between source and destination."""
+                     source_pool: dict, dest_pool: dict) -> tuple[bool, str]:
         
         try:
             # Build rsync command with permission preservation
@@ -99,31 +104,12 @@ class MigrationService:
                 "rsync",
                 "-av",
                 "--perms",
-                "--preserve-times",
                 "--group",
                 "--owner",
                 "--progress",
                 "--no-whole-file",
                 "--inplace"
             ]
-            
-            # Handle remote pools via SSH
-            if source_pool.get("type") == "remote":
-                ssh_user = source_pool.get("ssh_user")
-                ssh_key = source_pool.get("ssh_key")
-                host = source_pool.get("ip")
-                
-                # Connect via SSH for verification of source path
-                ssh_conn = self.ssh_service.connect(host, ssh_user, ssh_key)
-                source_path = f"{ssh_user}@{host}:{source_path}"
-            
-            if dest_pool.get("type") == "remote":
-                ssh_user = dest_pool.get("ssh_user")
-                ssh_key = dest_pool.get("ssh_key")
-                host = dest_pool.get("ip")
-                
-                ssh_conn = self.ssh_service.connect(host, ssh_user, ssh_key)
-                dest_path = f"{ssh_user}@{host}:{dest_path}"
             
             rsync_cmd.extend([source_path, dest_path])
             
@@ -158,15 +144,30 @@ class MigrationService:
             
             if return_code != 0:
                 stderr = process.stderr.read()
-                print(f"[ERROR] Rsync failed with code {return_code}: {stderr}", flush=True)
-                return False
+                error_msg = f"Rsync failed with code {return_code}: {stderr.strip()}"
+                print(f"[ERROR] {error_msg}", flush=True)
+                return False, error_msg
             
-            return True
+            return True, ""
         
         except Exception as e:
-            print(f"[ERROR] Rsync execution failed: {e}", flush=True)
-            return False
-    
+            error_msg = f"Rsync execution failed: {e}"
+            print(f"[ERROR] {error_msg}", flush=True)
+            return False, error_msg
+
+    def _cleanup_partial_destination(self, dest_path: str, dest_pool: dict):
+        """Remove partially copied destination data on failure."""
+        try:
+            dest = Path(dest_path)
+            if dest.exists():
+                if dest.is_dir():
+                    shutil.rmtree(dest)
+                else:
+                    dest.unlink()
+                print(f"[INFO] Cleaned up partial destination: {dest_path}", flush=True)
+        except Exception as e:
+            print(f"[ERROR] Failed to clean up partial destination {dest_path}: {e}", flush=True)
+
     def _verify_migration(self, source_path: str, dest_path: str) -> bool:
         """Verify that migration was successful."""
         

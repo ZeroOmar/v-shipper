@@ -102,13 +102,25 @@ class ConfigManager:
             return False
         
         try:
-            # Decode password from config (base64 encoded)
-            config_password = base64.b64decode(
-                self.config.web_ui.admin_password
-            ).decode('utf-8')
-            
-            return (username == self.config.web_ui.admin_user and 
-                    password == config_password)
+            # Decode password from config (base64 encoded) if possible
+            try:
+                config_password = base64.b64decode(self.config.web_ui.admin_password).decode('utf-8')
+            except Exception:
+                config_password = self.config.web_ui.admin_password
+
+            # Accept if provided password matches decoded config password
+            if username == self.config.web_ui.admin_user and password == config_password:
+                return True
+
+            # Also accept if provided password is base64-encoded form of the decoded config password
+            try:
+                provided_decoded = base64.b64decode(password).decode('utf-8')
+                if username == self.config.web_ui.admin_user and provided_decoded == config_password:
+                    return True
+            except Exception:
+                pass
+
+            return False
         except Exception as e:
             print(f"[ERROR] Auth validation error: {e}", flush=True)
             return False

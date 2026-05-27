@@ -1,6 +1,7 @@
 """Task queue and progress tracking."""
 
 import uuid
+import json
 import time
 from typing import Dict, Any, Optional, Callable
 from threading import Thread, Lock
@@ -16,6 +17,8 @@ class TaskQueue:
         self.running_task_id: Optional[str] = None
         self.locks_dir = Path("/tmp/locks")
         self.locks_dir.mkdir(exist_ok=True)
+        self.tasks_file = Path("/tmp/vshipper_tasks.json")
+        self._load_tasks()
     
     def add_task(self, task_type: str, **kwargs) -> str:
         """Add a new task to the queue."""
@@ -36,6 +39,7 @@ class TaskQueue:
                 "completed_at": None,
                 "params": kwargs
             }
+            self._save_tasks()
         
         print(f"[TASK:{task_id}] Created task type={task_type}", flush=True)
         return task_id
@@ -60,6 +64,7 @@ class TaskQueue:
             # Update elapsed time
             if task.get("started_at"):
                 task["elapsed_seconds"] = int(time.time() - task["started_at"])
+            self._save_tasks()
     
     def start_task(self, task_id: str):
         """Mark task as running."""
@@ -93,6 +98,7 @@ class TaskQueue:
             
             if self.running_task_id == task_id:
                 self.running_task_id = None
+            self._save_tasks()
     
     def create_lockfile(self, pool: str, volume: str) -> str:
         """Create exclusive lock for volume operation."""
@@ -115,6 +121,30 @@ class TaskQueue:
     def get_lock_file(self, pool: str, volume: str) -> str:
         """Get lock file path for volume."""
         return str(self.locks_dir / f"{pool}_{volume}.lock")
+
+    def _load_tasks(self):
+        """Load persisted tasks from disk."""
+        try:
+            if self.tasks_file.exists():
+                raw = json.loads(self.tasks_file.read_text())
+                if isinstance(raw, dict):
+                    self.tasks = raw
+        except Exception as e:
+            print(f"[WARNING] Unable to load persisted tasks: {e}", flush=True)
+        
+        for task in self.tasks.values():
+            if task.get("status") in {"running", "pending"}:
+                task["status"] = "failed"
+                task["error"] = "Server restarted while task was in progress."
+                task["completed_at"] = time.time()
+        self._save_tasks()
+
+    def _save_tasks(self):
+        """Persist tasks to disk."""
+        try:
+            self.tasks_file.write_text(json.dumps(self.tasks, indent=2))
+        except Exception as e:
+            print(f"[WARNING] Unable to save tasks: {e}", flush=True)
 
 
 # Global task queue instance

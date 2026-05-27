@@ -1,10 +1,21 @@
 """SSH service for remote operations."""
 
 import base64
+import warnings
 import paramiko
 from pathlib import Path
 from typing import Optional
 import io
+
+try:
+    from cryptography.utils import CryptographyDeprecationWarning
+    warnings.filterwarnings(
+        "ignore",
+        category=CryptographyDeprecationWarning,
+        module=r"paramiko.*"
+    )
+except Exception:
+    pass
 
 
 class SSHService:

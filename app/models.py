@@ -11,8 +11,6 @@ class DockerHost(BaseModel):
     ip: str
     pool: str
     pool_type: str  # 'local' or 'remote'
-    ssh_user: Optional[str] = None
-    ssh_key: Optional[str] = None
 
 
 class BackupPool(BaseModel):
@@ -70,6 +68,7 @@ class VolumeInfo(BaseModel):
     name: str
     path: str
     size_gb: float
+    size_loading: bool = False
     created_timestamp: Optional[int] = None
     backups: List[str] = Field(default_factory=list)
 
@@ -119,6 +118,15 @@ class DeleteRequest(BaseModel):
     """Delete request."""
     pool: str
     volume_name: str
+    confirm: bool = False
+
+
+class RestoreRequest(BaseModel):
+    """Restore backup request."""
+    backup_pool: str
+    backup_file: str
+    dest_pool: str
+    dest_volume: str
 
 
 class PoolCreateRequest(BaseModel):

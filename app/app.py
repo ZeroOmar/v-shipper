@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pathlib import Path
 import os
+import shutil
 
 from app.config import load_config
 from app.services.volume_service import get_volume_service
@@ -73,8 +74,41 @@ async def add_cors_headers(request: Request, call_next):
 @app.on_event("startup")
 async def startup_event():
     """Startup event."""
+    _cleanup_orphaned_restore_dirs()
     print(f"[APP] v-shipper started successfully", flush=True)
     print(f"[APP] Listening on port {config.web_ui.port}", flush=True)
+
+
+def _cleanup_orphaned_restore_dirs():
+    """Remove orphaned .restore_temp_* directories from crashed restore operations."""
+    try:
+        for pool in config.docker_hosts:
+            pool_path = Path(pool.pool)
+            if not pool_path.exists():
+                continue
+            
+            for item in pool_path.iterdir():
+                if item.is_dir() and item.name.startswith('.restore_temp_'):
+                    try:
+                        shutil.rmtree(item)
+                        print(f"[APP] Cleaned up orphaned restore directory: {item}", flush=True)
+                    except Exception as e:
+                        print(f"[WARNING] Failed to remove {item}: {e}", flush=True)
+        
+        for pool in config.backup_pools:
+            pool_path = Path(pool.path)
+            if not pool_path.exists():
+                continue
+            
+            for item in pool_path.iterdir():
+                if item.is_dir() and item.name.startswith('.restore_temp_'):
+                    try:
+                        shutil.rmtree(item)
+                        print(f"[APP] Cleaned up orphaned restore directory: {item}", flush=True)
+                    except Exception as e:
+                        print(f"[WARNING] Failed to remove {item}: {e}", flush=True)
+    except Exception as e:
+        print(f"[WARNING] Error during cleanup of orphaned restore dirs: {e}", flush=True)
 
 
 @app.on_event("shutdown")

@@ -31,3 +31,4 @@ tests/
 README.md
 docker-compose.yml
 Makefile
+.DS_Store

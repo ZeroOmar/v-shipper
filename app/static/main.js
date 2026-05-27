@@ -4,14 +4,24 @@ const API_BASE = '/api';
 let currentUser = null;
 let sessionId = null;
 let refreshInterval = null;
+let volumeSizePollInterval = null;
+let poolsCache = {};
+let poolsMetadata = {}; // Cache for volume/backup counts
+let activePool = null;
+let taskHistory = []; // Keep track of recent tasks
+let consecutiveLoadFailures = 0; // Track network failures
 
 // Configuration
 const POLL_INTERVAL = 2000; // 2 seconds
 const AUTO_REFRESH_INTERVAL = 30000; // 30 seconds
+const MAX_TASK_HISTORY = 10; // Keep last 10 tasks
+const MAX_LOAD_FAILURES = 3; // Logout after 3 consecutive failures
 
 // ============ Initialization ============
 
 document.addEventListener('DOMContentLoaded', () => {
+    sessionId = localStorage.getItem('session_id');
+    currentUser = localStorage.getItem('username');
     checkAuthStatus();
 });
 
@@ -48,6 +58,7 @@ async function login() {
             sessionId = data.session_id;
             currentUser = username;
             localStorage.setItem('session_id', sessionId);
+            localStorage.setItem('username', username);
             showDashboard();
             loadPools();
         } else {
@@ -62,6 +73,7 @@ async function logout() {
     try {
         sessionId = null;
         localStorage.removeItem('session_id');
+        if (refreshInterval) clearInterval(refreshInterval);
         showLoginScreen();
     } catch (error) {
         showError(`Logout error: ${error.message}`);
@@ -78,6 +90,7 @@ function showLoginScreen() {
 function showDashboard() {
     document.getElementById('loginScreen').classList.remove('active');
     document.getElementById('dashboard').classList.add('active');
+    document.getElementById('currentUser').textContent = currentUser || 'admin';
     loadPools();
     startAutoRefresh();
 }
@@ -96,6 +109,18 @@ async function loadPools() {
     
     try {
         const response = await fetch(`${API_BASE}/pools?session_id=${sessionId}`);
+        
+        if (response.status === 401) {
+            // Session expired
+            sessionId = null;
+            localStorage.removeItem('session_id');
+            localStorage.removeItem('username');
+            if (refreshInterval) clearInterval(refreshInterval);
+            showLoginScreen();
+            showError('Session expired. Please log in again.');
+            return;
+        }
+        
         const data = await response.json();
         
         if (!response.ok) {
@@ -103,8 +128,29 @@ async function loadPools() {
             return;
         }
         
+        // Reset failure counter on successful load
+        consecutiveLoadFailures = 0;
+        
+        poolsCache = {};
+        data.pools.forEach(pool => {
+            poolsCache[pool.name] = pool;
+        });
         displayPools(data.pools);
     } catch (error) {
+        consecutiveLoadFailures++;
+        console.warn(`Load pools failure ${consecutiveLoadFailures}/${MAX_LOAD_FAILURES}: ${error.message}`);
+        
+        if (consecutiveLoadFailures >= MAX_LOAD_FAILURES) {
+            // App is offline - redirect to login and stop refreshes
+            showError('Application is offline. Please check your connection.');
+            sessionId = null;
+            localStorage.removeItem('session_id');
+            localStorage.removeItem('username');
+            if (refreshInterval) clearInterval(refreshInterval);
+            showLoginScreen();
+            return;
+        }
+        
         showError(`Failed to load pools: ${error.message}`);
     }
 }
@@ -116,37 +162,36 @@ function displayPools(pools) {
     pools.forEach(pool => {
         const poolEl = document.createElement('div');
         poolEl.className = 'pool-item';
+        if (activePool === pool.name) poolEl.classList.add('active');
         
         const usagePercent = pool.usage_percent || 0;
+        const metadata = poolsMetadata[pool.name];
+        const countLabel = metadata
+            ? pool.pool_type === 'backup'
+                ? `📦 ${metadata.backup_count} backups`
+                : `📂 ${metadata.volume_count} volumes`
+            : 'Loading counts...';
         
         poolEl.innerHTML = `
-            <div class="pool-header">
-                <div>
-                    <span class="pool-name">${pool.name}</span>
-                    <span class="pool-type">${pool.pool_type}</span>
+            <div style="cursor: pointer;" onclick="selectPool('${pool.name}')">
+                <div class="pool-name">${pool.name}</div>
+                <div class="pool-type">${pool.pool_type}</div>
+                <div class="pool-counts" style="margin-top: 6px; font-size: 12px; color: #7f8c8d;">
+                    ${countLabel}
                 </div>
-                <button class="btn" onclick="loadVolumesForPool('${pool.name}')">View Volumes</button>
-            </div>
-            <div class="pool-stats">
-                <div class="stat">
-                    <div class="stat-label">Total</div>
-                    <div class="stat-value">${pool.total_gb.toFixed(1)} GB</div>
+                <div class="pool-stats" style="margin-top: 8px;">
+                    <div class="stat">
+                        <div class="stat-label">Free</div>
+                        <div class="stat-value">${pool.available_gb.toFixed(1)} GB</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Usage</div>
+                        <div class="stat-value">${usagePercent.toFixed(0)}%</div>
+                    </div>
                 </div>
-                <div class="stat">
-                    <div class="stat-label">Used</div>
-                    <div class="stat-value">${pool.used_gb.toFixed(1)} GB</div>
+                <div class="progress-bar" style="margin-top: 8px;">
+                    <div class="progress-fill" style="width: ${Math.min(usagePercent, 100)}%"></div>
                 </div>
-                <div class="stat">
-                    <div class="stat-label">Available</div>
-                    <div class="stat-value">${pool.available_gb.toFixed(1)} GB</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-label">Usage</div>
-                    <div class="stat-value">${usagePercent.toFixed(1)}%</div>
-                </div>
-            </div>
-            <div class="progress-bar">
-                <div class="progress-fill" style="width: ${Math.min(usagePercent, 100)}%"></div>
             </div>
         `;
         
@@ -154,9 +199,28 @@ function displayPools(pools) {
     });
 }
 
+function selectPool(poolName) {
+    activePool = poolName;
+    displayPools(Object.values(poolsCache));
+    loadVolumesForPool(poolName);
+}
+
 async function loadVolumesForPool(poolName) {
     if (!sessionId) return;
-    
+    activePool = poolName;
+    if (volumeSizePollInterval) {
+        clearInterval(volumeSizePollInterval);
+        volumeSizePollInterval = null;
+    }
+
+    const container = document.getElementById('volumesContainer');
+    container.innerHTML = `
+        <div class="placeholder">
+            <div class="loading-spinner"></div>
+            <p>Loading volumes...</p>
+        </div>
+    `;
+
     try {
         const response = await fetch(`${API_BASE}/volumes?pool=${poolName}&session_id=${sessionId}`);
         const data = await response.json();
@@ -166,43 +230,49 @@ async function loadVolumesForPool(poolName) {
             return;
         }
         
+        // Cache count metadata for the selected pool to avoid repeated full scans.
+        const poolType = poolsCache[poolName]?.pool_type || 'local';
+        poolsMetadata[poolName] = {
+            volume_count: poolType === 'backup' ? 0 : data.volumes.length,
+            backup_count: poolType === 'backup' ? data.volumes.length : 0
+        };
+        
+        displayPools(Object.values(poolsCache));
         displayVolumes(poolName, data.volumes);
+        startVolumeSizePolling(poolName, data.volumes);
     } catch (error) {
         showError(`Failed to load volumes: ${error.message}`);
     }
 }
 
 function displayVolumes(poolName, volumes) {
-    const modal = document.getElementById('volumesModal');
-    const content = modal.querySelector('.modal-content');
+    const poolType = poolsCache[poolName]?.pool_type || 'local';
+    const container = document.getElementById('volumesContainer');
     
-    let html = `
-        <div class="modal-header">
-            <h3>Volumes in ${poolName}</h3>
-            <button class="close-btn" onclick="closeModal('volumesModal')">×</button>
-        </div>
-        <div class="modal-body">
-    `;
+    let html = `<h2>${poolName}</h2>`;
     
     if (volumes.length === 0) {
-        html += '<p>No volumes found in this pool.</p>';
+        html += '<div class="placeholder"><p>No volumes found in this pool</p></div>';
     } else {
         volumes.forEach(volume => {
-            const sizeGB = (volume.size_gb || 0).toFixed(2);
+            const sizeText = volume.size_loading
+                ? `<span class="loading-spinner" style="width: 14px; height: 14px; border-width: 2px;"></span> Calculating...`
+                : `${(volume.size_gb || 0).toFixed(2)} GB`;
             const created = volume.created_timestamp ? new Date(volume.created_timestamp * 1000).toLocaleDateString() : 'N/A';
+            const backupCount = volume.backups && volume.backups.length > 0 ? volume.backups.length : 0;
             
             html += `
                 <div class="volume-item">
                     <div class="volume-info">
                         <div class="volume-name">${volume.name}</div>
                         <div class="volume-details">
-                            Size: ${sizeGB} GB | Created: ${created}
-                            ${volume.backups && volume.backups.length > 0 ? ` | Backups: ${volume.backups.length}` : ''}
+                            Size: ${sizeText} | Created: ${created}
+                            ${backupCount ? ` | Backups: ${backupCount}` : ''}
                         </div>
                     </div>
                     <div class="volume-actions">
-                        <button class="btn" style="font-size: 11px;" onclick="openMigrateModal('${poolName}', '${volume.name}')">Migrate</button>
-                        <button class="btn" style="font-size: 11px;" onclick="openBackupModal('${poolName}', '${volume.name}')">Backup</button>
+                        ${poolType !== 'backup' ? `<button class="btn" style="font-size: 11px;" onclick="openMigrateModal('${poolName}', '${volume.name}')">Migrate</button>` : ''}
+                        ${poolType !== 'backup' ? `<button class="btn" style="font-size: 11px;" onclick="openBackupModal('${poolName}', '${volume.name}')">Backup</button>` : `<button class="btn" style="font-size: 11px;" onclick="openRestoreModal('${poolName}', '${volume.name}')">Restore</button>`}
                         <button class="btn danger" style="font-size: 11px;" onclick="openDeleteModal('${poolName}', '${volume.name}')">Delete</button>
                     </div>
                 </div>
@@ -210,9 +280,43 @@ function displayVolumes(poolName, volumes) {
         });
     }
     
-    html += '</div>';
-    content.innerHTML = html;
-    openModal('volumesModal');
+    container.innerHTML = html;
+}
+
+function startVolumeSizePolling(poolName, volumes) {
+    if (!volumes.some(volume => volume.size_loading)) {
+        return;
+    }
+
+    if (volumeSizePollInterval) {
+        clearInterval(volumeSizePollInterval);
+    }
+
+    volumeSizePollInterval = setInterval(async () => {
+        if (activePool !== poolName) {
+            clearInterval(volumeSizePollInterval);
+            volumeSizePollInterval = null;
+            return;
+        }
+
+        try {
+            const response = await fetch(`${API_BASE}/volumes?pool=${poolName}&session_id=${sessionId}`);
+            const data = await response.json();
+
+            if (!response.ok) {
+                return;
+            }
+
+            displayVolumes(poolName, data.volumes);
+
+            if (!data.volumes.some(volume => volume.size_loading)) {
+                clearInterval(volumeSizePollInterval);
+                volumeSizePollInterval = null;
+            }
+        } catch (error) {
+            console.warn('Volume size refresh error:', error.message);
+        }
+    }, 2500);
 }
 
 // ============ Migration ============
@@ -366,6 +470,75 @@ async function startBackup(sourcePool, sourceVolume) {
     }
 }
 
+function openRestoreModal(backupPool, backupFile) {
+    const modal = document.getElementById('backupModal');
+    const content = modal.querySelector('.modal-content');
+    const defaultVolume = backupFile.split('_backup_')[0] || backupFile.replace(/\.tar\.gz$/, '');
+
+    content.innerHTML = `
+        <div class="modal-header">
+            <h3>Restore Backup</h3>
+            <button class="close-btn" onclick="closeModal('backupModal')">×</button>
+        </div>
+        <div class="form-group">
+            <label>Backup Pool</label>
+            <input type="text" value="${backupPool}" disabled>
+        </div>
+        <div class="form-group">
+            <label>Backup File</label>
+            <input type="text" value="${backupFile}" disabled>
+        </div>
+        <div class="form-group">
+            <label>Destination Pool</label>
+            <select id="restorePool">
+                <option value="">-- Select destination pool --</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Volume Name</label>
+            <input type="text" id="restoreVolumeName" value="${defaultVolume}" required>
+        </div>
+        <button class="btn success" style="width: 100%;" onclick="startRestore('${backupPool}', '${backupFile}')">Start Restore</button>
+    `;
+
+    loadPoolsForSelect('restorePool');
+    openModal('backupModal');
+}
+
+async function startRestore(backupPool, backupFile) {
+    const destPool = document.getElementById('restorePool').value;
+    const destVolume = document.getElementById('restoreVolumeName').value;
+
+    if (!destPool || !destVolume) {
+        showError('Please select a destination pool and volume name');
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_BASE}/restore`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                backup_pool: backupPool,
+                backup_file: backupFile,
+                dest_pool: destPool,
+                dest_volume: destVolume
+            })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            closeModal('backupModal');
+            showTaskProgress(data.task_id);
+        } else {
+            showError(data.detail);
+        }
+    } catch (error) {
+        showError(`Restore error: ${error.message}`);
+    }
+}
+
 // ============ Delete ============
 
 function openDeleteModal(pool, volume) {
@@ -396,7 +569,9 @@ function openDeleteModal(pool, volume) {
 }
 
 async function confirmDelete(pool, volume) {
-    if (!document.getElementById('deleteConfirm').checked) {
+    const confirmed = document.getElementById('deleteConfirm').checked;
+    
+    if (!confirmed) {
         showError('Please confirm deletion');
         return;
     }
@@ -407,16 +582,24 @@ async function confirmDelete(pool, volume) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 pool: pool,
-                volume_name: volume
+                volume_name: volume,
+                confirm: confirmed
             })
         });
         
         const data = await response.json();
         
         if (response.ok) {
+            if (data.require_confirmation) {
+                showError(data.message || 'Deletion requires confirmation');
+                return;
+            }
             closeModal('deleteModal');
             showSuccess('Volume deleted successfully');
             loadPools();
+            if (activePool) {
+                loadVolumesForPool(activePool);
+            }
         } else {
             showError(data.detail);
         }
@@ -427,37 +610,59 @@ async function confirmDelete(pool, volume) {
 
 // ============ Task Progress ============
 
+// Global tracking of current task
+let currentTaskId = null;
+let currentTaskPollInterval = null;
+
 async function showTaskProgress(taskId) {
-    const modal = document.getElementById('progressModal');
-    const content = modal.querySelector('.modal-content');
+    currentTaskId = taskId;
     
-    content.innerHTML = `
-        <div class="modal-header">
-            <h3>Operation Progress</h3>
-        </div>
-        <div id="progressContent">
-            <div class="task-status pending">Pending...</div>
-        </div>
-    `;
+    // Insert initial task entry
+    addOrUpdateTaskHistory({
+        task_id: taskId,
+        current_operation: 'Starting task...',
+        progress_percent: 0,
+        status: 'pending',
+        elapsed_seconds: 0,
+        estimated_remaining_seconds: null
+    });
+    renderTaskHistory();
     
-    openModal('progressModal');
-    
-    // Poll progress
-    const pollInterval = setInterval(async () => {
+    // Start polling progress
+    currentTaskPollInterval = setInterval(async () => {
         try {
             const response = await fetch(`${API_BASE}/task/${taskId}/progress`);
             const data = await response.json();
             
-            if (response.ok) {
-                updateProgressDisplay(data);
-                
-                if (data.status === 'completed' || data.status === 'failed') {
-                    clearInterval(pollInterval);
-                    setTimeout(() => {
-                        closeModal('progressModal');
-                        loadPools();
-                    }, 2000);
-                }
+            if (!response.ok) {
+                const errorText = data.detail || 'Unable to load task progress.';
+                addOrUpdateTaskHistory({
+                    task_id: taskId,
+                    current_operation: 'Task state unavailable',
+                    progress_percent: 0,
+                    status: 'failed',
+                    elapsed_seconds: 0,
+                    estimated_remaining_seconds: null,
+                    error: errorText
+                });
+                renderTaskHistory();
+                clearInterval(currentTaskPollInterval);
+                currentTaskId = null;
+                return;
+            }
+
+            addOrUpdateTaskHistory(data);
+            renderTaskHistory();
+            
+            if (data.status === 'completed' || data.status === 'failed') {
+                clearInterval(currentTaskPollInterval);
+                currentTaskId = null;
+                setTimeout(() => {
+                    loadPools();
+                    if (activePool) {
+                        loadVolumesForPool(activePool);
+                    }
+                }, 2000);
             }
         } catch (error) {
             console.error('Progress poll error:', error);
@@ -465,26 +670,50 @@ async function showTaskProgress(taskId) {
     }, POLL_INTERVAL);
 }
 
-function updateProgressDisplay(task) {
-    const progressContent = document.getElementById('progressContent');
+function addOrUpdateTaskHistory(task) {
+    const index = taskHistory.findIndex(entry => entry.task_id === task.task_id);
+    const newEntry = {
+        task_id: task.task_id,
+        current_operation: task.current_operation || 'Processing...',
+        progress_percent: task.progress_percent || 0,
+        status: task.status || 'pending',
+        elapsed_seconds: task.elapsed_seconds || 0,
+        estimated_remaining_seconds: task.estimated_remaining_seconds || null,
+        error: task.error || null
+    };
     
-    progressContent.innerHTML = `
-        <div class="task-status ${task.status}">${task.status.toUpperCase()}</div>
-        <div class="progress-container">
-            <div class="progress-text">
-                ${task.current_operation || 'Processing...'}
-                ${task.progress_percent}%
+    if (index === -1) {
+        taskHistory.unshift(newEntry);
+    } else {
+        taskHistory[index] = newEntry;
+    }
+    
+    taskHistory = taskHistory.slice(0, MAX_TASK_HISTORY);
+}
+
+function renderTaskHistory() {
+    const progressPanel = document.getElementById('progressPanel');
+    
+    if (taskHistory.length === 0) {
+        progressPanel.innerHTML = '<div class="placeholder-text">No active tasks</div>';
+        return;
+    }
+    
+    const items = taskHistory.map(task => {
+        return `
+            <div class="task-history-item">
+                <div class="task-status ${task.status}">${task.status.toUpperCase()}</div>
+                <div class="progress-text">${task.current_operation}</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: ${task.progress_percent}%"></div>
+                </div>
+                <div class="task-meta">${task.progress_percent}% · ${task.elapsed_seconds}s${task.estimated_remaining_seconds ? ` · ${task.estimated_remaining_seconds}s left` : ''}</div>
+                ${task.error ? `<div class="error-message">${task.error}</div>` : ''}
             </div>
-            <div class="progress-bar">
-                <div class="progress-fill" style="width: ${task.progress_percent}%"></div>
-            </div>
-            <div style="font-size: 12px; color: #7f8c8d; margin-top: 8px;">
-                Elapsed: ${task.elapsed_seconds}s
-                ${task.estimated_remaining_seconds ? ` | Estimated remaining: ${task.estimated_remaining_seconds}s` : ''}
-            </div>
-        </div>
-        ${task.error ? `<div class="error-message">${task.error}</div>` : ''}
-    `;
+        `;
+    }).join('');
+    
+    progressPanel.innerHTML = items;
 }
 
 // ============ Helper Functions ============
@@ -495,6 +724,7 @@ async function loadPoolsForSelect(selectId) {
         const data = await response.json();
         
         const select = document.getElementById(selectId);
+        select.innerHTML = '<option value="">-- Select pool --</option>';
         
         data.pools.forEach(pool => {
             if (pool.pool_type !== 'backup') {
@@ -515,6 +745,7 @@ async function loadBackupPoolsForSelect(selectId) {
         const data = await response.json();
         
         const select = document.getElementById(selectId);
+        select.innerHTML = '<option value="">-- Select backup pool --</option>';
         
         data.pools.forEach(pool => {
             if (pool.pool_type === 'backup') {
@@ -538,28 +769,27 @@ function closeModal(modalId) {
 }
 
 function showError(message) {
-    const errorDiv = document.createElement('div');
-    errorDiv.className = 'error-message';
-    errorDiv.textContent = message;
-    
-    const container = document.querySelector('.container');
-    container.insertBefore(errorDiv, container.firstChild);
-    
-    setTimeout(() => {
-        errorDiv.remove();
-    }, 5000);
+    createToast(message, 'error');
 }
 
 function showSuccess(message) {
-    const successDiv = document.createElement('div');
-    successDiv.className = 'success-message';
-    successDiv.textContent = message;
-    
-    const container = document.querySelector('.container');
-    container.insertBefore(successDiv, container.firstChild);
-    
+    createToast(message, 'success');
+}
+
+function createToast(message, type) {
+    const toastContainer = document.getElementById('toastContainer');
+    if (!toastContainer) {
+        console.warn('Toast container not found');
+        return;
+    }
+
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+    toastContainer.appendChild(toast);
+
     setTimeout(() => {
-        successDiv.remove();
+        toast.remove();
     }, 5000);
 }
 
@@ -571,11 +801,3 @@ document.addEventListener('click', (e) => {
 });
 
 // Restore session if available
-window.addEventListener('load', () => {
-    sessionId = localStorage.getItem('session_id');
-    if (sessionId) {
-        showDashboard();
-    } else {
-        showLoginScreen();
-    }
-});

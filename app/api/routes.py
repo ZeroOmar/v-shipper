@@ -1,10 +1,10 @@
 """API routes for v-shipper."""
 
 import base64
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from app.models import (
     LoginRequest, PoolsListResponse, VolumesListResponse, VolumeDetailResponse,
-    MigrateRequest, BackupRequest, RenameRequest, DeleteRequest, PoolCreateRequest,
+    MigrateRequest, BackupRequest, RenameRequest, DeleteRequest, RestoreRequest, PoolCreateRequest,
     TaskResponse, TaskProgressResponse, HealthResponse, PoolStats, VolumeInfo
 )
 from app.services.volume_service import get_volume_service
@@ -20,11 +20,29 @@ sessions = {}
 
 
 def get_session(request: Request) -> dict:
-    """Get session from request."""
+    """Get session from request.
+
+    Supports session id in cookie, query parameter `session_id`, or
+    `Authorization: Bearer <session_id>` header for flexibility in clients.
+    """
+    # 1) Cookie
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
-        return {}
-    return sessions.get(session_id, {})
+    if session_id and session_id in sessions:
+        return sessions.get(session_id, {})
+
+    # 2) Query parameter
+    session_id = request.query_params.get("session_id")
+    if session_id and session_id in sessions:
+        return sessions.get(session_id, {})
+
+    # 3) Authorization header (Bearer)
+    auth = request.headers.get("Authorization") or request.headers.get("authorization")
+    if auth and auth.lower().startswith("bearer "):
+        token = auth.split(None, 1)[1].strip()
+        if token and token in sessions:
+            return sessions.get(token, {})
+
+    return {}
 
 
 def require_auth(session: dict = Depends(get_session)) -> dict:
@@ -35,7 +53,7 @@ def require_auth(session: dict = Depends(get_session)) -> dict:
 
 
 @router.post("/api/login")
-async def login(request: LoginRequest):
+async def login(request: LoginRequest, response: Response):
     """Login endpoint."""
     try:
         if validate_auth(request.username, request.password):
@@ -45,12 +63,9 @@ async def login(request: LoginRequest):
             sessions[session_id] = {"authenticated": True, "user": request.username}
             
             response_data = {"status": "ok", "message": "Login successful"}
-            # Set session cookie will be handled by FastAPI response
-            return {
-                "status": "ok",
-                "message": "Login successful",
-                "session_id": session_id
-            }
+            # Set session cookie so browsers will send it automatically
+            response.set_cookie("session_id", session_id, httponly=True, samesite='Lax')
+            return {"status": "ok", "message": "Login successful", "session_id": session_id}
         else:
             raise HTTPException(status_code=401, detail="Invalid credentials")
     except Exception as e:
@@ -86,10 +101,7 @@ async def list_pools(session: dict = Depends(require_auth)):
             pool_info = {
                 "name": host.name,
                 "path": host.pool,
-                "type": host.pool_type,
-                "ip": host.ip,
-                "ssh_user": host.ssh_user,
-                "ssh_key": host.ssh_key
+                "type": host.pool_type
             }
             stats = volume_service.get_pool_stats(pool_info)
             pools_stats.append(stats)
@@ -261,20 +273,23 @@ async def rename_volume(request: RenameRequest, session: dict = Depends(require_
 
 @router.post("/api/delete")
 async def delete_volume(request: DeleteRequest, session: dict = Depends(require_auth)):
-    """Delete a volume."""
+    """Delete a volume or backup artifact."""
     try:
         config = get_config()
         volume_service = get_volume_service(config)
         
-        # Check for backups
         detail = volume_service.get_volume_detail(request.pool, request.volume_name)
-        if detail and not detail.get("backups"):
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Volume or backup not found")
+
+        # Warn when deleting a volume without a confirmed backup
+        if not detail.get("backups") and not request.confirm:
             return {
                 "status": "warning",
-                "message": "No backups found for this volume",
+                "message": "No backups found for this volume. Confirm to delete.",
                 "require_confirmation": True
             }
-        
+
         success = volume_service.delete_volume(request.pool, request.volume_name)
         
         if not success:
@@ -286,6 +301,44 @@ async def delete_volume(request: DeleteRequest, session: dict = Depends(require_
         raise
     except Exception as e:
         print(f"[ERROR] Delete error: {e}", flush=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/api/restore", response_model=TaskResponse)
+async def restore_backup(request: RestoreRequest, session: dict = Depends(require_auth)):
+    """Restore a backup archive into a pool."""
+    try:
+        config = get_config()
+        volume_service = get_volume_service(config)
+        backup_service = get_backup_service(config, volume_service)
+        task_queue = get_task_queue()
+
+        task_id = task_queue.add_task(
+            task_type="restore",
+            source_pool=request.backup_pool,
+            source_volume=request.backup_file,
+            dest_pool=request.dest_pool,
+            verify=True
+        )
+
+        import threading
+        def _restore():
+            backup_service.restore_backup(
+                task_id,
+                request.backup_pool,
+                request.backup_file,
+                request.dest_pool,
+                request.dest_volume
+            )
+
+        thread = threading.Thread(target=_restore, daemon=True)
+        thread.start()
+
+        return TaskResponse(task_id=task_id, status="pending", progress_percent=0)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Restore error: {e}", flush=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 

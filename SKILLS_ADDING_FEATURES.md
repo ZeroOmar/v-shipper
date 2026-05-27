@@ -154,12 +154,13 @@ function pollProgress(taskId) {
 - Register task type in queue if new operation type
 - Ensure lockfile handling for exclusivity
 - Update progress callback format for consistency
+- Note: Task state is automatically persisted to `/tmp/vshipper_tasks.json`
 
 ### 6. Testing
 **Directory**: `tests/`
 - Create unit test for service method
 - Create integration test for full API flow
-- Mock SSH/Docker operations if needed
+- Mock rsync/tar operations if needed
 
 **Example (test_volume_service.py)**:
 ```python
@@ -175,28 +176,29 @@ def test_clone_volume():
 
 ## Common Patterns
 
-### SSH Operations on Remote Pools
+### File Operations (All Pool Types)
 ```python
-# In service method
-if pool_type == "remote":
-    ssh_conn = ssh_service.connect(host, user, ssh_key)
-    ssh_conn.exec_command(f"rsync -av /src /dst")
-else:
-    # Local operation
-    subprocess.run(f"rsync -av /src /dst", shell=True)
+# All pools (local and remote) are treated as local mounted filesystems
+# No SSH or special handling needed
+import subprocess
+
+# For rsync
+subprocess.run(f"rsync -av /src /dst", shell=True)
+
+# For tar
+subprocess.run(f"tar -czf archive.tar.gz -C /src .", shell=True)
 ```
 
 ### Lockfile Management
 ```python
-lock_file = f"/tmp/locks/{pool}_{volume}.lock"
-with open(lock_file, 'w') as f:
-    f.write(str(os.getpid()))
-
+lock_file = self.task_queue.create_lockfile(pool, volume)
 try:
     # Do operation
     pass
+except Exception as e:
+    raise
 finally:
-    os.remove(lock_file)
+    self.task_queue.remove_lockfile(lock_file)
 ```
 
 ### Progress Reporting
@@ -204,11 +206,11 @@ finally:
 progress = {
     "status": "running",
     "progress_percent": 45,
-    "current_file": "large_file.tar.gz",
+    "current_operation": "Processing large_file.tar.gz",
     "elapsed_seconds": 120,
     "estimated_remaining_seconds": 150
 }
-task_queue.update_progress(task_id, progress)
+self.task_queue.update_progress(task_id, progress)
 ```
 
 ## Checklist
@@ -218,8 +220,7 @@ task_queue.update_progress(task_id, progress)
 - [ ] Frontend HTML/JS updated
 - [ ] Task queue integration (if async)
 - [ ] Lockfile handling (if exclusive operation)
-- [ ] SSH tunnel support (if remote pool operation)
 - [ ] Tests written
-- [ ] Logs to stdout only
+- [ ] Logs to stdout only (with `flush=True`)
 - [ ] Documentation updated
 - [ ] Local docker-compose test passes
