@@ -33,13 +33,13 @@ RUN addgroup -g 1000 appuser && \
     adduser -D -u 1000 -G appuser appuser
 
 # Set working directory
-WORKDIR /app
+WORKDIR /usr/src/vshipper
 
 # Copy Python packages from builder
 COPY --from=builder /usr/local /usr/local
 
-# Copy application
-COPY app/ /app/
+# Copy application package into the project root
+COPY app/ ./app/
 
 # Create necessary directories
 RUN mkdir -p /tmp/locks /config && \
