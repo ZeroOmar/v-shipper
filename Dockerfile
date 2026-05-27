@@ -61,4 +61,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 EXPOSE 80
 
 # Run application
-CMD ["python3", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "80"]
+CMD ["python3", "-m", "uvicorn", "app.app:app", "--host", "0.0.0.0", "--port", "80"]
