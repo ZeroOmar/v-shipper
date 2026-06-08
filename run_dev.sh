@@ -20,6 +20,8 @@ backup_pools:
     rsync_module: docker-backup
     remote_host: 10.0.13.21:30026
 
+staging_dir: /Users/zero/Files/Repos/_temp/staging
+
 web_ui:
   port: 8000
   admin_user: admin

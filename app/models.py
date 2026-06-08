@@ -35,6 +35,7 @@ class AppConfig(BaseModel):
     docker_hosts: List[DockerHost] = Field(default_factory=list)
     backup_pools: List[BackupPool] = Field(default_factory=list)
     web_ui: WebUIConfig
+    staging_dir: str = "/tmp/staging"
     
     @field_validator('docker_hosts', 'backup_pools', mode='before')
     @classmethod

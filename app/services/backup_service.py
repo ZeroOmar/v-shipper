@@ -37,7 +37,22 @@ class BackupService:
             
             source_path = f"{source_pool['path']}/{source_volume_name}"
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            backup_path = f"{backup_pool['path']}/{source_volume_name}_backup_{timestamp}.tar.gz"
+            archive_name = f"{source_volume_name}_backup_{timestamp}.tar.gz"
+            
+            # For remote backup pools, create archive in staging directory first
+            if backup_pool.get('pool_type') == 'remote':
+                staging_dir = Path(self.config.staging_dir)
+                staging_dir.mkdir(parents=True, exist_ok=True)
+                archive_path = str(staging_dir / archive_name)
+                remote_backup_pool = backup_pool
+            else:
+                # For local backup pools, create directly in pool directory
+                backup_path = backup_pool['path']
+                if backup_path.endswith('/'):
+                    archive_path = f"{backup_path}{archive_name}"
+                else:
+                    archive_path = f"{backup_path}/{archive_name}"
+                remote_backup_pool = None
             
             # Update progress
             self.task_queue.update_progress(task_id, {
@@ -46,19 +61,35 @@ class BackupService:
             })
             
             # Create backup archive
-            if not self._create_archive(task_id, source_path, backup_path):
+            if not self._create_archive(task_id, source_path, archive_path):
                 error_msg = "Archive creation failed"
                 self.task_queue.complete_task(task_id, success=False, error=error_msg)
                 return False
+            
+            # If remote backup pool, transfer archive via rsync
+            if remote_backup_pool:
+                self.task_queue.update_progress(task_id, {
+                    "current_operation": f"Transferring backup to remote pool",
+                    "progress_percent": 75
+                })
+                
+                if not self._transfer_to_remote_backup(task_id, archive_path, remote_backup_pool, archive_name):
+                    error_msg = "Failed to transfer backup to remote pool"
+                    self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                    try:
+                        Path(archive_path).unlink()
+                    except:
+                        pass
+                    return False
             
             self.task_queue.update_progress(task_id, {
                 "current_operation": "Verifying backup",
                 "progress_percent": 85
             })
             
-            # Verify if requested
+            # Verify if requested (verify local copy for remote backups)
             if verify:
-                if not self._verify_backup(backup_path):
+                if not self._verify_backup(archive_path):
                     error_msg = "Backup verification failed"
                     self.task_queue.complete_task(task_id, success=False, error=error_msg)
                     return False
@@ -261,6 +292,44 @@ class BackupService:
             return False
         finally:
             self.task_queue.remove_lockfile(lock_file)
+
+    def _transfer_to_remote_backup(self, task_id: str, local_archive_path: str, 
+                                   remote_pool: dict, archive_name: str) -> bool:
+        """Transfer backup archive to remote rsync daemon pool."""
+        try:
+            remote_host = remote_pool.get('remote_host')
+            rsync_module = remote_pool.get('rsync_module')
+            
+            if not remote_host or not rsync_module:
+                print(f"[ERROR] Remote pool missing remote_host or rsync_module", flush=True)
+                return False
+            
+            # Build rsync target (no trailing slash for file)
+            target = f"rsync://{remote_host}/{rsync_module}/{archive_name}"
+            
+            print(f"[TASK:{task_id}] Transferring archive to {target}", flush=True)
+            
+            process = subprocess.Popen(
+                ["rsync", "-avz", local_archive_path, target],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            stdout, stderr = process.communicate(timeout=600)
+            
+            if process.returncode == 0:
+                print(f"[TASK:{task_id}] Archive transferred successfully", flush=True)
+                return True
+            else:
+                print(f"[ERROR] Transfer failed: {stderr}", flush=True)
+                return False
+        except subprocess.TimeoutExpired:
+            print(f"[ERROR] Transfer timed out", flush=True)
+            return False
+        except Exception as e:
+            print(f"[ERROR] Transfer error: {e}", flush=True)
+            return False
 
 # Global backup service instance
 _backup_service = None

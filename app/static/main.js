@@ -845,7 +845,7 @@ async function loadPoolsForSelect(selectId) {
         select.innerHTML = '<option value="">-- Select pool --</option>';
         
         data.pools.forEach(pool => {
-            if (pool.pool_type !== 'backup') {
+            if (pool.role !== 'backup') {
                 const option = document.createElement('option');
                 option.value = pool.name;
                 option.textContent = `${pool.name} (${pool.available_gb.toFixed(1)} GB free)`;
@@ -866,7 +866,7 @@ async function loadBackupPoolsForSelect(selectId) {
         select.innerHTML = '<option value="">-- Select backup pool --</option>';
         
         data.pools.forEach(pool => {
-            if (pool.pool_type === 'backup') {
+            if (pool.role === 'backup') {
                 const option = document.createElement('option');
                 option.value = pool.name;
                 option.textContent = `${pool.name} (${pool.available_gb.toFixed(1)} GB free)`;
