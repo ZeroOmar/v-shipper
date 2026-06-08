@@ -9,13 +9,18 @@ class DockerHost(BaseModel):
     """Docker host pool configuration."""
     name: str
     pool: str
-    pool_type: str  # 'local' or 'remote'
+    pool_type: str = "local"  # 'local' or 'remote'
+    remote_host: Optional[str] = None
+    rsync_module: Optional[str] = None
 
 
 class BackupPool(BaseModel):
     """Backup pool configuration."""
     name: str
-    path: str
+    pool: str
+    pool_type: str = "local"  # 'local' or 'remote'
+    remote_host: Optional[str] = None
+    rsync_module: Optional[str] = None
 
 
 class WebUIConfig(BaseModel):
@@ -51,10 +56,13 @@ class PoolStats(BaseModel):
     """Pool statistics."""
     name: str
     pool_type: str
+    role: str = "docker"
     total_gb: float
     used_gb: float
     available_gb: float
     usage_percent: float
+    reachable: bool = True
+    error: Optional[str] = None
 
 
 class PoolsListResponse(BaseModel):

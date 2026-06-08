@@ -170,7 +170,7 @@ function displayPools(pools) {
         const usagePercent = pool.usage_percent || 0;
         const metadata = poolsMetadata[pool.name];
         const countLabel = metadata
-            ? pool.pool_type === 'backup'
+            ? pool.role === 'backup'
                 ? `📦 ${metadata.backup_count} backups`
                 : `📂 ${metadata.volume_count} volumes`
             : 'Loading counts...';
@@ -178,7 +178,7 @@ function displayPools(pools) {
         poolEl.innerHTML = `
             <div style="cursor: pointer;" onclick="selectPool('${pool.name}')">
                 <div class="pool-name">${pool.name}</div>
-                <div class="pool-type">${pool.pool_type}</div>
+                <div class="pool-type">${pool.role === 'backup' ? 'Backup' : 'Docker'} (${pool.pool_type})</div>
                 <div class="pool-counts" style="margin-top: 6px; font-size: 12px; color: #7f8c8d;">
                     ${countLabel}
                 </div>
@@ -234,10 +234,10 @@ async function loadVolumesForPool(poolName) {
         }
         
         // Cache count metadata for the selected pool to avoid repeated full scans.
-        const poolType = poolsCache[poolName]?.pool_type || 'local';
+        const poolRole = poolsCache[poolName]?.role || 'docker';
         poolsMetadata[poolName] = {
-            volume_count: poolType === 'backup' ? 0 : data.volumes.length,
-            backup_count: poolType === 'backup' ? data.volumes.length : 0
+            volume_count: poolRole === 'backup' ? 0 : data.volumes.length,
+            backup_count: poolRole === 'backup' ? data.volumes.length : 0
         };
         
         displayPools(Object.values(poolsCache));
@@ -249,7 +249,7 @@ async function loadVolumesForPool(poolName) {
 }
 
 function displayVolumes(poolName, volumes, warnings = []) {
-    const poolType = poolsCache[poolName]?.pool_type || 'local';
+    const poolRole = poolsCache[poolName]?.role || 'docker';
     const container = document.getElementById('volumesContainer');
     
     let html = `<h2>${poolName}</h2>`;
@@ -277,8 +277,8 @@ function displayVolumes(poolName, volumes, warnings = []) {
                         </div>
                     </div>
                     <div class="volume-actions">
-                        ${poolType !== 'backup' ? `<button class="btn" style="font-size: 11px;" onclick="openMigrateModal('${poolName}', '${volume.name}')">Migrate</button>` : ''}
-                        ${poolType !== 'backup' ? `<button class="btn" style="font-size: 11px;" onclick="openBackupModal('${poolName}', '${volume.name}')">Backup</button>` : `<button class="btn" style="font-size: 11px;" onclick="openRestoreModal('${poolName}', '${volume.name}')">Restore</button>`}
+                        ${poolRole !== 'backup' ? `<button class="btn" style="font-size: 11px;" onclick="openMigrateModal('${poolName}', '${volume.name}')">Migrate</button>` : ''}
+                        ${poolRole !== 'backup' ? `<button class="btn" style="font-size: 11px;" onclick="openBackupModal('${poolName}', '${volume.name}')">Backup</button>` : `<button class="btn" style="font-size: 11px;" onclick="openRestoreModal('${poolName}', '${volume.name}')">Restore</button>`}
                         <button class="btn danger" style="font-size: 11px;" onclick="openDeleteModal('${poolName}', '${volume.name}')">Delete</button>
                     </div>
                 </div>

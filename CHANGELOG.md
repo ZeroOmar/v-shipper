@@ -2,7 +2,72 @@
 
 All notable changes to v-shipper are documented in this file.
 
-## [Unreleased]
+## 0.0.4
+
+### Added
+- **Remote rsync daemon support** — Full support for rsync daemon pools as remote backup/docker sources. Pools can now specify `pool_type: remote`, `remote_host`, and `rsync_module` for rsync daemon access
+- **Remote backup restoration** — Backup files from remote pools are now automatically pulled to `/tmp/staging` via rsync before extraction
+- **Remote pool file deletion** — Deleting backups from remote pools now uses rsync daemon protocol instead of treating them as local filesystem
+- **Remote pool storage calculation** — Remote pools now calculate total storage by summing file sizes from rsync listing (shown in UI pool card)
+- **Pool role metadata** — Added `role` field to PoolStats (docker vs backup) for proper UI button rendering based on pool function, not storage type
+
+### Fixed
+- **Configuration typo** — Fixed `rysnc_module` → `rsync_module` in run_dev.sh example config
+- **Backup pool cleanup crash** — Fixed `'BackupPool' object has no attribute 'path'` error by using `.pool` attribute and skipping remote pools in orphaned directory cleanup
+- **Backup pool UI buttons** — Fixed backup pools showing Migrate/Backup buttons instead of Restore button by checking pool `role` (docker vs backup) instead of `pool_type` (local vs remote)
+- **Remote backup deletion** — Delete operations on remote backup pools no longer fail with "file not found" errors
+- **Remote backup restore** — Restore operations now properly fetch backup files from remote rsync daemons before extraction
+
+### Changed
+- **Pool type vs role distinction** — `pool_type` now indicates storage type (local/remote), while `role` indicates pool function (docker/backup). UI button rendering now correctly uses `role` instead of `pool_type`
+- **Remote pool staging** — Remote backup restore operations now stage files in `/tmp/staging` directory before extraction
+
+### Technical Details
+
+#### Backend Changes
+- `app/services/volume_service.py`:
+  - Added `_is_remote_pool()` helper
+  - Added `_build_rsync_target()` for constructing rsync daemon URLs
+  - Added `_run_rsync_list()` for remote directory listing
+  - Added `_parse_rsync_list_line()` for parsing rsync output
+  - Added `_list_remote_volumes()` for remote pool volume discovery
+  - Added `_list_remote_backups()` for remote backup pool discovery
+  - Added `_get_remote_size()` for remote file size calculation
+  - Added `_get_remote_pool_total_size()` for pool storage totals
+  - Updated `delete_volume()` to handle remote pool deletion via rsync
+  - Updated `get_pool_stats()` to calculate and return total size for remote pools with reachability status
+
+- `app/services/backup_service.py`:
+  - Updated `restore_backup()` to detect remote backup pools and pull files to `/tmp/staging` via rsync before extraction
+
+- `app/app.py`:
+  - Updated `_cleanup_orphaned_restore_dirs()` to skip remote backup pools and use correct `.pool` attribute
+
+- `app/static/main.js`:
+  - Updated `displayPools()` to use pool `role` instead of `pool_type` for backup count labeling
+  - Updated `loadVolumesForPool()` to use pool `role` for metadata caching
+  - Updated `displayVolumes()` to use pool `role` for button logic (Migrate/Backup vs Restore)
+
+#### Configuration Changes
+Remote pools now support rsync daemon access:
+
+```yaml
+docker_hosts:
+  - name: remote_host
+    pool: /
+    pool_type: remote
+    remote_host: 10.0.13.21:30026
+    rsync_module: docker-volumes
+
+backup_pools:
+  - name: remote_backup
+    pool: /
+    pool_type: remote
+    remote_host: 10.0.13.21:30026
+    rsync_module: docker-backup
+```
+
+## 0.0.3
 
 ### Added
 - **Async volume size calculation** — Large directory sizes are now calculated in the background, preventing UI freeze when first listing volumes

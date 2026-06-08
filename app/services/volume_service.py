@@ -2,10 +2,11 @@
 
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 from threading import Lock, Thread
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 from app.models import VolumeInfo, PoolStats
 from app.services.task_queue import get_task_queue
 
@@ -27,15 +28,23 @@ class VolumeService:
                 return {
                     "name": host.name,
                     "path": host.pool,
-                    "type": host.pool_type
+                    "type": host.pool_type,
+                    "pool_type": host.pool_type,
+                    "remote_host": host.remote_host,
+                    "rsync_module": host.rsync_module,
+                    "role": "docker"
                 }
 
         for backup in self.config.backup_pools:
             if backup.name == pool_name:
                 return {
                     "name": backup.name,
-                    "path": backup.path,
-                    "type": "backup"
+                    "path": backup.pool,
+                    "type": "backup",
+                    "pool_type": backup.pool_type,
+                    "remote_host": backup.remote_host,
+                    "rsync_module": backup.rsync_module,
+                    "role": "backup"
                 }
 
         return None
@@ -46,15 +55,207 @@ class VolumeService:
             if backup.name == pool_name:
                 return {
                     "name": backup.name,
-                    "path": backup.path
+                    "path": backup.pool,
+                    "pool_type": backup.pool_type,
+                    "remote_host": backup.remote_host,
+                    "rsync_module": backup.rsync_module,
+                    "role": "backup"
                 }
         return None
-    
+
+    def _is_remote_pool(self, pool: Dict) -> bool:
+        return pool.get("pool_type") == "remote"
+
+    def _build_rsync_target(self, pool: Dict, volume_name: str = "", trailing_slash: bool = True) -> str:
+        """Build an rsync daemon target path for a remote pool."""
+        remote_host = pool.get("remote_host")
+        rsync_module = pool.get("rsync_module")
+
+        if not remote_host or not rsync_module:
+            raise ValueError(f"Remote pool {pool.get('name')} missing remote_host or rsync_module")
+
+        target = f"rsync://{remote_host}/{rsync_module}"
+        if volume_name:
+            target = f"{target}/{volume_name}"
+        if trailing_slash:
+            target = f"{target.rstrip('/')}/"
+        return target
+
+    def _run_rsync_list(self, target: str) -> tuple[bool, str, str]:
+        """Run rsync --list-only for a remote target."""
+        try:
+            process = subprocess.Popen(
+                ["rsync", "--list-only", target],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            stdout, stderr = process.communicate(timeout=60)
+            success = process.returncode == 0
+            return success, stdout, stderr.strip()
+        except subprocess.TimeoutExpired:
+            return False, "", "rsync list operation timed out"
+        except Exception as e:
+            return False, "", str(e)
+
+    def _parse_rsync_list_line(self, line: str) -> Optional[Dict[str, Any]]:
+        """Parse a single rsync --list-only line into metadata."""
+        parts = line.split()
+        if len(parts) < 5:
+            return None
+
+        # Example line: drwxr-xr-x        4096 2026/06/08 11:11:09 dirname/
+        try:
+            mode = parts[0]
+            size = int(parts[1].replace(',', ''))
+            name = parts[-1]
+            is_dir = name.endswith('/')
+            return {"name": name, "size": size, "is_dir": is_dir, "mode": mode}
+        except ValueError:
+            return None
+
+    def _list_remote_volumes(self, pool: Dict) -> (List[VolumeInfo], List[str]):
+        """List volumes for a remote pool using rsync daemon listing."""
+        warnings = []
+        try:
+            target = self._build_rsync_target(pool)
+            success, stdout, stderr = self._run_rsync_list(target)
+            if not success:
+                warnings.append(f"Remote pool unreachable: {stderr}")
+                return [], warnings
+
+            volumes = []
+            for line in stdout.splitlines():
+                parsed = self._parse_rsync_list_line(line)
+                if not parsed:
+                    continue
+                name = parsed["name"]
+                if "/" in name.rstrip("/"):
+                    continue
+                if not parsed["is_dir"]:
+                    continue
+
+                volume_name = name.rstrip("/")
+                volumes.append(VolumeInfo(
+                    name=volume_name,
+                    path=f"{target}{volume_name}/",
+                    size_gb=0.0,
+                    size_bytes=0,
+                    size_loading=True,
+                    created_timestamp=None,
+                    backups=[]
+                ))
+            return sorted(volumes, key=lambda v: v.name), warnings
+        except Exception as e:
+            warnings.append(f"Remote list failed: {e}")
+            return [], warnings
+
+    def _list_remote_backups(self, pool: Dict) -> (List[VolumeInfo], List[str]):
+        """List backup archives for a remote backup pool."""
+        warnings = []
+        try:
+            target = self._build_rsync_target(pool)
+            success, stdout, stderr = self._run_rsync_list(target)
+            if not success:
+                warnings.append(f"Remote backup pool unreachable: {stderr}")
+                return [], warnings
+
+            volumes = []
+            for line in stdout.splitlines():
+                parsed = self._parse_rsync_list_line(line)
+                if not parsed or parsed["is_dir"]:
+                    continue
+
+                file_name = parsed["name"]
+                if not file_name.endswith((".tar.gz", ".tgz")):
+                    continue
+
+                volumes.append(VolumeInfo(
+                    name=file_name,
+                    path=f"{target}{file_name}",
+                    size_gb=parsed["size"] / (1024 ** 3),
+                    size_bytes=parsed["size"],
+                    size_loading=False,
+                    created_timestamp=None,
+                    backups=[]
+                ))
+            return sorted(volumes, key=lambda v: v.name), warnings
+        except Exception as e:
+            warnings.append(f"Remote backup list failed: {e}")
+            return [], warnings
+
+    def _get_remote_size(self, pool: Dict, volume_name: str) -> Optional[int]:
+        """Get total size of a remote volume or file via rsync listing."""
+        try:
+            target = self._build_rsync_target(pool, volume_name, trailing_slash=True)
+            success, stdout, stderr = self._run_rsync_list(target)
+            if not success:
+                return None
+
+            total_size = 0
+            for line in stdout.splitlines():
+                parsed = self._parse_rsync_list_line(line)
+                if not parsed:
+                    continue
+                if parsed["is_dir"]:
+                    continue
+                total_size += parsed["size"]
+            return total_size
+        except Exception:
+            return None
+
+    def _get_remote_pool_total_size(self, pool: Dict) -> int:
+        """Calculate total size of all files in a remote pool."""
+        try:
+            target = self._build_rsync_target(pool)
+            success, stdout, stderr = self._run_rsync_list(target)
+            if not success:
+                return 0
+
+            total_size = 0
+            for line in stdout.splitlines():
+                parsed = self._parse_rsync_list_line(line)
+                if not parsed or parsed["is_dir"]:
+                    continue
+                total_size += parsed["size"]
+            return total_size
+        except Exception:
+            return 0
+
     def get_pool_stats(self, pool: Dict) -> PoolStats:
         """Get disk usage statistics for a pool."""
         pool_path = pool.get("path") or pool.get("pool")
         
         try:
+            if pool.get("pool_type") == "remote":
+                reachable = True
+                error = None
+                total_bytes = 0
+                try:
+                    target = self._build_rsync_target(pool)
+                    success, _, stderr = self._run_rsync_list(target)
+                    if not success:
+                        reachable = False
+                        error = stderr
+                    else:
+                        total_bytes = self._get_remote_pool_total_size(pool)
+                except Exception as exc:
+                    reachable = False
+                    error = str(exc)
+
+                total_gb = total_bytes / (1024 ** 3)
+                return PoolStats(
+                    name=pool["name"],
+                    pool_type=pool.get("pool_type", "remote"),
+                    role=pool.get("role", "docker"),
+                    total_gb=round(total_gb, 2),
+                    used_gb=round(total_gb, 2),
+                    available_gb=0,
+                    usage_percent=0,
+                    reachable=reachable,
+                    error=error
+                )
+
             stat_info = os.statvfs(pool_path)
             total_bytes = stat_info.f_blocks * stat_info.f_frsize
             free_bytes = stat_info.f_bavail * stat_info.f_frsize
@@ -67,21 +268,27 @@ class VolumeService:
             
             return PoolStats(
                 name=pool["name"],
-                pool_type=pool.get("type", "unknown"),
+                pool_type=pool.get("pool_type", pool.get("type", "unknown")),
+                role=pool.get("role", "docker"),
                 total_gb=round(total_gb, 2),
                 used_gb=round(used_gb, 2),
                 available_gb=round(available_gb, 2),
-                usage_percent=round(usage_percent, 2)
+                usage_percent=round(usage_percent, 2),
+                reachable=True,
+                error=None
             )
         except Exception as e:
             print(f"[ERROR] Failed to get pool stats for {pool['name']}: {e}", flush=True)
             return PoolStats(
                 name=pool["name"],
                 pool_type=pool.get("type", "unknown"),
+                role=pool.get("role", "docker"),
                 total_gb=0,
                 used_gb=0,
                 available_gb=0,
-                usage_percent=0
+                usage_percent=0,
+                reachable=False,
+                error=str(e)
             )
     
     def list_volumes(self, pool_name: str) -> (List[VolumeInfo], List[str]):
@@ -91,7 +298,12 @@ class VolumeService:
         if not pool:
             print(f"[ERROR] Pool {pool_name} not found", flush=True)
             return [], []
-        
+
+        if self._is_remote_pool(pool):
+            if pool.get("role") == "backup":
+                return self._list_remote_backups(pool)
+            return self._list_remote_volumes(pool)
+
         pool_path = Path(pool["path"])
         volumes = []
         missing_sizes = []
@@ -184,11 +396,37 @@ class VolumeService:
             return False
     
     def delete_volume(self, pool_name: str, volume_name: str) -> bool:
-        """Delete a volume."""
+        """Delete a volume or backup file."""
         pool = self.get_pool_by_name(pool_name)
         if not pool:
             return False
         
+        # Handle remote pools via rsync
+        if self._is_remote_pool(pool):
+            try:
+                target = self._build_rsync_target(pool, volume_name)
+                # Remove trailing slash for file deletion
+                target = target.rstrip('/')
+                
+                process = subprocess.Popen(
+                    ["rsync", "--remove-source-files", "-r", f"{target}/"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                stdout, stderr = process.communicate(timeout=60)
+                
+                if process.returncode == 0:
+                    print(f"[INFO] Deleted {volume_name} from remote pool {pool_name}", flush=True)
+                    return True
+                else:
+                    print(f"[ERROR] Failed to delete {volume_name} from remote pool: {stderr}", flush=True)
+                    return False
+            except Exception as e:
+                print(f"[ERROR] Failed to delete remote volume: {e}", flush=True)
+                return False
+        
+        # Handle local pools normally
         volume_path = Path(pool["path"]) / volume_name
         
         try:
@@ -224,10 +462,27 @@ class VolumeService:
         pool = self.get_pool_by_name(pool_name)
         if not pool:
             return None
-        
-        volume_path = Path(pool["path"]) / volume_name
-        
+
         try:
+            if self._is_remote_pool(pool):
+                size_bytes = self._get_remote_size(pool, volume_name) or 0
+                created_timestamp = None
+                permissions = None
+                backups = [] if pool.get("role") == "backup" else self._find_backups(volume_name)
+                locked = self.task_queue.is_volume_locked(pool_name, volume_name)
+
+                return {
+                    "name": volume_name,
+                    "pool": pool_name,
+                    "size_gb": size_bytes / (1024 ** 3),
+                    "size_bytes": size_bytes,
+                    "created_timestamp": created_timestamp,
+                    "backups": backups,
+                    "permissions": permissions,
+                    "locked": locked
+                }
+
+            volume_path = Path(pool["path"]) / volume_name
             if not volume_path.exists():
                 return None
             
@@ -272,12 +527,34 @@ class VolumeService:
         backups = []
         
         for backup_pool in self.config.backup_pools:
-            backup_path = Path(backup_pool.path)
-            if backup_path.exists():
-                # Look for backup files/dirs related to this volume
-                for backup_item in backup_path.iterdir():
-                    if volume_name in backup_item.name:
-                        backups.append(backup_item.name)
+            if backup_pool.pool_type == "remote":
+                remote_pool = {
+                    "name": backup_pool.name,
+                    "path": backup_pool.pool,
+                    "pool_type": backup_pool.pool_type,
+                    "remote_host": backup_pool.remote_host,
+                    "rsync_module": backup_pool.rsync_module,
+                    "role": "backup"
+                }
+                try:
+                    success, stdout, stderr = self._run_rsync_list(self._build_rsync_target(remote_pool))
+                    if not success:
+                        continue
+                    for line in stdout.splitlines():
+                        parsed = self._parse_rsync_list_line(line)
+                        if not parsed or parsed["is_dir"]:
+                            continue
+                        if volume_name in parsed["name"]:
+                            backups.append(parsed["name"])
+                except Exception:
+                    continue
+            else:
+                backup_path = Path(backup_pool.pool)
+                if backup_path.exists():
+                    # Look for backup files/dirs related to this volume
+                    for backup_item in backup_path.iterdir():
+                        if volume_name in backup_item.name:
+                            backups.append(backup_item.name)
         
         return backups
 

@@ -34,7 +34,9 @@ class ConfigManager:
                 host = DockerHost(
                     name=host_config["name"],
                     pool=host_config["pool"],
-                    pool_type=host_config.get("pool_type", "local")
+                    pool_type=host_config.get("pool_type", "local"),
+                    remote_host=host_config.get("remote_host"),
+                    rsync_module=host_config.get("rsync_module")
                 )
                 docker_hosts.append(host)
             
@@ -43,7 +45,10 @@ class ConfigManager:
             for backup_config in config_dict.get("backup_pools", []):
                 backup = BackupPool(
                     name=backup_config["name"],
-                    path=backup_config["path"]
+                    pool=backup_config.get("pool") or backup_config.get("path"),
+                    pool_type=backup_config.get("pool_type", "local"),
+                    remote_host=backup_config.get("remote_host"),
+                    rsync_module=backup_config.get("rsync_module")
                 )
                 backup_pools.append(backup)
             

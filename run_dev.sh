@@ -9,13 +9,17 @@ docker_hosts:
   - name: local2
     pool: /Users/zero/Files/Repos/_temp/test_volumes/host2
     pool_type: local
-  - name: remote1
-    pool: /Volumes/docker-volumes/
-    pool_type: remote
 
 backup_pools:
   - name: backup
-    path: /Users/zero/Files/Repos/_temp/test_backups
+    pool: /Users/zero/Files/Repos/_temp/test_backups
+    pool_type: local
+  - name: remotebackup
+    pool: /
+    pool_type: remote
+    rsync_module: docker-backup
+    remote_host: 10.0.13.21:30026
+
 web_ui:
   port: 8000
   admin_user: admin

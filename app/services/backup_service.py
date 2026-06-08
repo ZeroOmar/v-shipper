@@ -142,13 +142,44 @@ class BackupService:
             self.task_queue.complete_task(task_id, success=False, error=error_msg)
             return False
 
-        backup_path = Path(backup_pool['path']) / backup_file
-        dest_path = Path(dest_pool['path']) / dest_volume_name
+        # Check if backup pool is remote - if so, pull the file via rsync first
+        if backup_pool.get('pool_type') == 'remote':
+            staging_dir = Path('/tmp/staging')
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            backup_path = staging_dir / backup_file
+            
+            try:
+                # Pull backup file from remote pool via rsync
+                remote_target = self.volume_service._build_rsync_target(backup_pool, backup_file)
+                process = subprocess.Popen(
+                    ["rsync", "-avz", remote_target, str(backup_path)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                stdout, stderr = process.communicate(timeout=600)
+                
+                if process.returncode != 0:
+                    error_msg = f"Failed to pull backup from remote pool: {stderr}"
+                    print(f"[ERROR] {error_msg}", flush=True)
+                    self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                    return False
+                
+                print(f"[INFO] Pulled backup file from remote pool to {backup_path}", flush=True)
+            except Exception as e:
+                error_msg = f"Failed to fetch remote backup: {e}"
+                print(f"[ERROR] {error_msg}", flush=True)
+                self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                return False
+        else:
+            backup_path = Path(backup_pool['path']) / backup_file
 
         if not backup_path.exists():
             error_msg = "Backup file not found"
             self.task_queue.complete_task(task_id, success=False, error=error_msg)
             return False
+
+        dest_path = Path(dest_pool['path']) / dest_volume_name
 
         if dest_path.exists():
             error_msg = "Restore destination already exists"

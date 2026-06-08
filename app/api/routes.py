@@ -102,7 +102,9 @@ async def list_pools(session: dict = Depends(require_auth)):
             pool_info = {
                 "name": host.name,
                 "path": host.pool,
-                "type": host.pool_type
+                "type": host.pool_type,
+                "pool_type": host.pool_type,
+                "role": "docker"
             }
             stats = volume_service.get_pool_stats(pool_info)
             pools_stats.append(stats)
@@ -111,8 +113,10 @@ async def list_pools(session: dict = Depends(require_auth)):
         for backup in config.backup_pools:
             pool_info = {
                 "name": backup.name,
-                "path": backup.path,
-                "type": "backup"
+                "path": backup.pool,
+                "type": "backup",
+                "pool_type": backup.pool_type,
+                "role": "backup"
             }
             stats = volume_service.get_pool_stats(pool_info)
             pools_stats.append(stats)

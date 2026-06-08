@@ -96,7 +96,11 @@ def _cleanup_orphaned_restore_dirs():
                         print(f"[WARNING] Failed to remove {item}: {e}", flush=True)
         
         for pool in config.backup_pools:
-            pool_path = Path(pool.path)
+            # Skip remote pools - they don't have local paths
+            if pool.pool_type == "remote":
+                continue
+            
+            pool_path = Path(pool.pool)
             if not pool_path.exists():
                 continue
             
