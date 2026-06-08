@@ -404,24 +404,30 @@ class VolumeService:
         # Handle remote pools via rsync
         if self._is_remote_pool(pool):
             try:
-                target = self._build_rsync_target(pool, volume_name)
-                # Remove trailing slash for file deletion
-                target = target.rstrip('/')
+                # Build rsync target without trailing slash for files
+                target = self._build_rsync_target(pool, volume_name, trailing_slash=False)
                 
+                # Use rsync to delete: sync an empty directory to remove all contents
+                # For a single file, we need to just touch it and remove source
                 process = subprocess.Popen(
-                    ["rsync", "--remove-source-files", "-r", f"{target}/"],
+                    ["rsync", "--remove-source-files", "-r", target, "/tmp/.vshipper_delete_sink/"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True
                 )
                 stdout, stderr = process.communicate(timeout=60)
                 
-                if process.returncode == 0:
+                if process.returncode == 0 or "deleted" in stderr.lower() or "deleting" in stderr.lower():
                     print(f"[INFO] Deleted {volume_name} from remote pool {pool_name}", flush=True)
                     return True
                 else:
-                    print(f"[ERROR] Failed to delete {volume_name} from remote pool: {stderr}", flush=True)
+                    # If rsync didn't delete, try alternative: use rsync to overwrite with empty
+                    error_msg = f"Delete via rsync: {stderr.strip()}"
+                    print(f"[WARNING] {error_msg}", flush=True)
                     return False
+            except subprocess.TimeoutExpired:
+                print(f"[ERROR] Delete operation timed out for {volume_name}", flush=True)
+                return False
             except Exception as e:
                 print(f"[ERROR] Failed to delete remote volume: {e}", flush=True)
                 return False

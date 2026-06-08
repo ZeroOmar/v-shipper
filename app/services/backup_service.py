@@ -149,8 +149,8 @@ class BackupService:
             backup_path = staging_dir / backup_file
             
             try:
-                # Pull backup file from remote pool via rsync
-                remote_target = self.volume_service._build_rsync_target(backup_pool, backup_file)
+                # Pull backup file from remote pool via rsync (no trailing slash for files)
+                remote_target = self.volume_service._build_rsync_target(backup_pool, backup_file, trailing_slash=False)
                 process = subprocess.Popen(
                     ["rsync", "-avz", remote_target, str(backup_path)],
                     stdout=subprocess.PIPE,

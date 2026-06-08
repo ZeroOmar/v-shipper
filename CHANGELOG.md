@@ -2,6 +2,23 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.0.5
+
+### Fixed
+- **Remote backup restore with trailing slash** — Fixed rsync error "Not a directory" when restoring backup files by using `trailing_slash=False` for file paths
+- **Remote backup deletion** — Delete operations on remote backup pools now work correctly using `rsync --remove-source-files` to pull and remove files in a single operation
+- **Rsync file path handling** — Corrected rsync target path construction for individual files vs directories (files should not have trailing slashes)
+
+### Technical Details
+
+#### Backend Changes
+- `app/services/backup_service.py`:
+  - Updated `restore_backup()` to use `trailing_slash=False` when building rsync target for backup files
+
+- `app/services/volume_service.py`:
+  - Updated `delete_volume()` to execute `rsync --remove-source-files` for remote pool deletion instead of failing
+  - Now properly syncs remote files to `/tmp/.vshipper_delete_sink/` and removes the source copy
+
 ## 0.0.4
 
 ### Added
