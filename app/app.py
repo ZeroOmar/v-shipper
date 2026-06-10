@@ -1,10 +1,10 @@
 """Main FastAPI application."""
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pathlib import Path
-import os
 import shutil
 
 from app.config import load_config
@@ -12,13 +12,6 @@ from app.services.volume_service import get_volume_service
 from app.services.migration_service import get_migration_service
 from app.services.backup_service import get_backup_service
 from app.api.routes import router
-
-# Initialize application
-app = FastAPI(
-    title="v-shipper",
-    description="Docker Volume Migration Application",
-    version="1.0.0"
-)
 
 # Load configuration
 try:
@@ -33,6 +26,24 @@ except Exception as e:
 get_volume_service(config)
 get_migration_service(config, get_volume_service(config))
 get_backup_service(config, get_volume_service(config))
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _cleanup_orphaned_restore_dirs()
+    print(f"[APP] v-shipper started successfully", flush=True)
+    print(f"[APP] Listening on port {config.web_ui.port}", flush=True)
+    yield
+    print(f"[APP] v-shipper shutting down", flush=True)
+
+
+# Initialize application
+app = FastAPI(
+    title="v-shipper",
+    description="Docker Volume Migration Application",
+    version="0.0.7",
+    lifespan=lifespan
+)
 
 
 # Mount static files
@@ -71,14 +82,6 @@ async def add_cors_headers(request: Request, call_next):
     return response
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Startup event."""
-    _cleanup_orphaned_restore_dirs()
-    print(f"[APP] v-shipper started successfully", flush=True)
-    print(f"[APP] Listening on port {config.web_ui.port}", flush=True)
-
-
 def _cleanup_orphaned_restore_dirs():
     """Remove orphaned .restore_temp_* directories from crashed restore operations."""
     try:
@@ -113,12 +116,6 @@ def _cleanup_orphaned_restore_dirs():
                         print(f"[WARNING] Failed to remove {item}: {e}", flush=True)
     except Exception as e:
         print(f"[WARNING] Error during cleanup of orphaned restore dirs: {e}", flush=True)
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Shutdown event."""
-    print(f"[APP] v-shipper shutting down", flush=True)
 
 
 if __name__ == "__main__":

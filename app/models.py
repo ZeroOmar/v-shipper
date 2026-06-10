@@ -175,4 +175,4 @@ class PoolCreateRequest(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str = "ok"
-    version: str = "1.0.0"
+    version: str = "0.0.7"

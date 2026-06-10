@@ -114,7 +114,7 @@ class VolumeService:
         except ValueError:
             return None
 
-    def _list_remote_volumes(self, pool: Dict) -> (List[VolumeInfo], List[str]):
+    def _list_remote_volumes(self, pool: Dict) -> tuple[List[VolumeInfo], List[str]]:
         """List volumes for a remote pool using rsync daemon listing."""
         warnings = []
         try:
@@ -150,7 +150,7 @@ class VolumeService:
             warnings.append(f"Remote list failed: {e}")
             return [], warnings
 
-    def _list_remote_backups(self, pool: Dict) -> (List[VolumeInfo], List[str]):
+    def _list_remote_backups(self, pool: Dict) -> tuple[List[VolumeInfo], List[str]]:
         """List backup archives for a remote backup pool."""
         warnings = []
         try:
@@ -375,10 +375,15 @@ class VolumeService:
         pool = self.get_pool_by_name(pool_name)
         if not pool:
             return False
-        
-        old_path = Path(pool["path"]) / old_name
-        new_path = Path(pool["path"]) / new_name
-        
+
+        pool_resolved = Path(pool["path"]).resolve()
+        old_path = (pool_resolved / old_name).resolve()
+        new_path = (pool_resolved / new_name).resolve()
+
+        if not old_path.is_relative_to(pool_resolved) or not new_path.is_relative_to(pool_resolved):
+            print(f"[ERROR] Path traversal attempt in rename: {old_name} -> {new_name}", flush=True)
+            return False
+
         try:
             if not old_path.exists():
                 print(f"[ERROR] Volume {old_name} not found", flush=True)
@@ -433,8 +438,13 @@ class VolumeService:
                 return False
         
         # Handle local pools normally
-        volume_path = Path(pool["path"]) / volume_name
-        
+        pool_resolved = Path(pool["path"]).resolve()
+        volume_path = (pool_resolved / volume_name).resolve()
+
+        if not volume_path.is_relative_to(pool_resolved):
+            print(f"[ERROR] Path traversal attempt in delete: {volume_name}", flush=True)
+            return False
+
         try:
             if not volume_path.exists():
                 print(f"[ERROR] Volume {volume_name} not found", flush=True)

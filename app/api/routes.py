@@ -1,6 +1,8 @@
 """API routes for v-shipper."""
 
 import base64
+import threading
+import uuid
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from app.models import (
@@ -58,10 +60,8 @@ async def login(request: LoginRequest, response: Response):
     """Login endpoint."""
     try:
         if validate_auth(request.username, request.password):
-            # Generate session ID
-            import uuid
             session_id = str(uuid.uuid4())
-            sessions[session_id] = {"authenticated": True, "user": request.username}
+            sessions[session_id] = {"authenticated": True, "user": request.username, "session_id": session_id}
             
             response_data = {"status": "ok", "message": "Login successful"}
             # Set session cookie so browsers will send it automatically
@@ -77,8 +77,9 @@ async def login(request: LoginRequest, response: Response):
 @router.post("/api/logout")
 async def logout(session: dict = Depends(get_session)):
     """Logout endpoint."""
-    if session and session.get("session_id") in sessions:
-        del sessions[session.get("session_id")]
+    session_id = session.get("session_id")
+    if session_id and session_id in sessions:
+        del sessions[session_id]
     return {"status": "ok"}
 
 
@@ -186,8 +187,6 @@ async def migrate_volume(request: MigrateRequest, session: dict = Depends(requir
             delete_source=request.delete_source
         )
         
-        # Execute migration in background
-        import threading
         def _migrate():
             migration_service.migrate_volume(
                 task_id,
@@ -232,8 +231,6 @@ async def backup_volume(request: BackupRequest, session: dict = Depends(require_
             verify=request.verify
         )
         
-        # Execute backup in background
-        import threading
         def _backup():
             backup_service.backup_volume(
                 task_id,
@@ -303,7 +300,6 @@ async def delete_volume(request: DeleteRequest, session: dict = Depends(require_
         )
 
         task_queue.start_task(task_id)
-        import threading
         def _delete():
             try:
                 success = volume_service.delete_volume(request.pool, request.volume_name)
@@ -344,7 +340,6 @@ async def restore_backup(request: RestoreRequest, session: dict = Depends(requir
             verify=True
         )
 
-        import threading
         def _restore():
             backup_service.restore_backup(
                 task_id,
@@ -391,20 +386,6 @@ async def list_tasks(session: dict = Depends(require_auth)):
     """List persisted task history."""
     try:
         task_queue = get_task_queue()
-        tasks = [
-            TaskProgressResponse(
-                task_id=task["task_id"],
-                status=task["status"],
-                task_type=task.get("type"),
-                progress_percent=task.get("progress_percent", 0),
-                current_operation=task.get("current_operation"),
-                elapsed_seconds=task.get("elapsed_seconds", 0),
-                estimated_remaining_seconds=task.get("estimated_remaining_seconds"),
-                error=task.get("error"),
-                params=task.get("params", {})
-            )
-            for task in task_queue.tasks.values()
-        ]
         sorted_tasks = sorted(task_queue.tasks.values(), key=lambda item: item.get("created_at", 0), reverse=True)
         tasks = [
             TaskProgressResponse(

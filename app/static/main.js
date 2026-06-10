@@ -111,7 +111,7 @@ async function loadPools() {
     if (!sessionId) return;
     
     try {
-        const response = await fetch(`${API_BASE}/pools?session_id=${sessionId}`);
+        const response = await fetch(`${API_BASE}/pools`);
         
         if (response.status === 401) {
             // Session expired
@@ -225,7 +225,7 @@ async function loadVolumesForPool(poolName) {
     `;
 
     try {
-        const response = await fetch(`${API_BASE}/volumes?pool=${poolName}&session_id=${sessionId}`);
+        const response = await fetch(`${API_BASE}/volumes?pool=${poolName}`);
         const data = await response.json();
         
         if (!response.ok) {
@@ -306,7 +306,7 @@ function startVolumeSizePolling(poolName, volumes) {
         }
 
         try {
-            const response = await fetch(`${API_BASE}/volumes?pool=${poolName}&session_id=${sessionId}`);
+            const response = await fetch(`${API_BASE}/volumes?pool=${poolName}`);
             const data = await response.json();
 
             if (!response.ok) {
@@ -809,7 +809,7 @@ async function loadTaskHistory() {
     if (!sessionId) return;
 
     try {
-        const response = await fetch(`${API_BASE}/tasks?session_id=${sessionId}`);
+        const response = await fetch(`${API_BASE}/tasks`);
         const data = await response.json();
 
         if (!response.ok) {
@@ -836,46 +836,30 @@ async function loadTaskHistory() {
 
 // ============ Helper Functions ============
 
-async function loadPoolsForSelect(selectId) {
-    try {
-        const response = await fetch(`${API_BASE}/pools?session_id=${sessionId}`);
-        const data = await response.json();
-        
-        const select = document.getElementById(selectId);
-        select.innerHTML = '<option value="">-- Select pool --</option>';
-        
-        data.pools.forEach(pool => {
-            if (pool.role !== 'backup') {
-                const option = document.createElement('option');
-                option.value = pool.name;
-                option.textContent = `${pool.name} (${pool.available_gb.toFixed(1)} GB free)`;
-                select.appendChild(option);
-            }
-        });
-    } catch (error) {
-        console.error('Failed to load pools:', error);
-    }
+function loadPoolsForSelect(selectId) {
+    const select = document.getElementById(selectId);
+    select.innerHTML = '<option value="">-- Select pool --</option>';
+    Object.values(poolsCache).forEach(pool => {
+        if (pool.role !== 'backup') {
+            const option = document.createElement('option');
+            option.value = pool.name;
+            option.textContent = `${pool.name} (${pool.available_gb.toFixed(1)} GB free)`;
+            select.appendChild(option);
+        }
+    });
 }
 
-async function loadBackupPoolsForSelect(selectId) {
-    try {
-        const response = await fetch(`${API_BASE}/pools?session_id=${sessionId}`);
-        const data = await response.json();
-        
-        const select = document.getElementById(selectId);
-        select.innerHTML = '<option value="">-- Select backup pool --</option>';
-        
-        data.pools.forEach(pool => {
-            if (pool.role === 'backup') {
-                const option = document.createElement('option');
-                option.value = pool.name;
-                option.textContent = `${pool.name} (${pool.available_gb.toFixed(1)} GB free)`;
-                select.appendChild(option);
-            }
-        });
-    } catch (error) {
-        console.error('Failed to load backup pools:', error);
-    }
+function loadBackupPoolsForSelect(selectId) {
+    const select = document.getElementById(selectId);
+    select.innerHTML = '<option value="">-- Select backup pool --</option>';
+    Object.values(poolsCache).forEach(pool => {
+        if (pool.role === 'backup') {
+            const option = document.createElement('option');
+            option.value = pool.name;
+            option.textContent = `${pool.name} (${pool.available_gb.toFixed(1)} GB free)`;
+            select.appendChild(option);
+        }
+    });
 }
 
 function openModal(modalId) {

@@ -2,6 +2,29 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.0.7
+
+### Fixed
+- **Logout never cleared session** — session dict was missing the `session_id` key, so `del sessions[session_id]` was a no-op on every logout; sessions now store their own ID and are correctly removed
+- **`list_tasks` built and immediately discarded a result set** — the first task loop (before the sorted loop) was dead code producing a list that was never used; removed
+- **`staging_dir` config ignored** — the `staging_dir` YAML key was parsed but never passed into `AppConfig`, so restore operations always used the hardcoded `/tmp/staging` regardless of config; now correctly read and forwarded
+- **Remote backup restore used hardcoded staging path** — `backup_service.py` had `/tmp/staging` hardcoded; now uses `self.config.staging_dir`
+
+### Security
+- **Command injection via `shell=True`** — `_verify_migration`, `_create_archive`, `_verify_backup`, and `restore_backup` all passed f-strings with user-controlled paths to `subprocess` with `shell=True`; all replaced with list-form subprocess calls
+- **Path traversal in rename/delete** — `rename_volume` and `delete_volume` constructed paths with user-supplied names without verifying the result stayed inside the pool directory; added `.resolve()` + `is_relative_to()` guards
+- **`validate_auth` accepted base64-encoded passwords from clients** — a second check decoded the incoming password as base64 and compared, meaning any client knowing the encoding could bypass the real password check; removed
+
+### Changed
+- **`staging_dir` now configurable** — parsed from YAML config and passed through `AppConfig`; default remains `/tmp/staging`
+- **Deprecated `@app.on_event` replaced** — startup/shutdown handlers migrated to FastAPI `lifespan` context manager
+- **Session token no longer sent in GET query params** — `main.js` was appending `?session_id=...` to all GET requests, leaking the token into URLs and server logs; cookies handle auth automatically
+- **Pool selector modals no longer make redundant API calls** — `loadPoolsForSelect` and `loadBackupPoolsForSelect` now read from `poolsCache` instead of fetching `/api/pools` a second time on every modal open
+
+### Removed
+- **Dead `ssh_service.py`** — SSH support was removed in 0.0.3 but the file remained; deleted
+- **`import threading` / `import uuid` inside route functions** — moved to module level in `routes.py`
+
 ## 0.0.5
 
 ### Fixed

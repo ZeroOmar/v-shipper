@@ -117,12 +117,8 @@ class BackupService:
         try:
             print(f"[TASK:{task_id}] Creating archive: {backup_path}", flush=True)
             
-            # Run tar command
-            cmd = f"tar -czf {backup_path} -C {Path(source_path).parent} {Path(source_path).name}"
-            
             process = subprocess.Popen(
-                cmd,
-                shell=True,
+                ["tar", "-czf", backup_path, "-C", str(Path(source_path).parent), Path(source_path).name],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
@@ -146,9 +142,7 @@ class BackupService:
         """Verify backup archive integrity."""
         
         try:
-            # Verify tar file integrity
-            cmd = f"tar -tzf {backup_path} > /dev/null 2>&1"
-            result = subprocess.run(cmd, shell=True)
+            result = subprocess.run(["tar", "-tzf", backup_path], capture_output=True)
             
             if result.returncode != 0:
                 print(f"[ERROR] Backup archive is corrupt", flush=True)
@@ -175,7 +169,7 @@ class BackupService:
 
         # Check if backup pool is remote - if so, pull the file via rsync first
         if backup_pool.get('pool_type') == 'remote':
-            staging_dir = Path('/tmp/staging')
+            staging_dir = Path(self.config.staging_dir)
             staging_dir.mkdir(parents=True, exist_ok=True)
             backup_path = staging_dir / backup_file
             
@@ -234,10 +228,8 @@ class BackupService:
                 shutil.rmtree(temp_extract_dir)
             temp_extract_dir.mkdir(parents=True, exist_ok=True)
 
-            cmd = f"tar -xzf {backup_path} -C {temp_extract_dir}"
             process = subprocess.Popen(
-                cmd,
-                shell=True,
+                ["tar", "-xzf", str(backup_path), "-C", str(temp_extract_dir)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True

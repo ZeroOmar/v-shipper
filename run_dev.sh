@@ -9,6 +9,11 @@ docker_hosts:
   - name: local2
     pool: /Users/zero/Files/Repos/_temp/test_volumes/host2
     pool_type: local
+  - name: DKR-02
+    pool: /
+    pool_type: remote
+    rsync_module: docker-volumes
+    remote_host: 10.0.13.115:873
 
 backup_pools:
   - name: backup

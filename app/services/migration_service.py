@@ -172,27 +172,11 @@ class MigrationService:
         """Verify that migration was successful."""
         
         try:
-            # Simple check: verify both paths exist and have same file count
-            source_files = set()
-            dest_files = set()
-            
-            # Count files in source
-            result = subprocess.run(
-                f"find {source_path} -type f | wc -l",
-                shell=True,
-                capture_output=True,
-                text=True
-            )
-            source_count = int(result.stdout.strip()) if result.returncode == 0 else -1
-            
-            # Count files in destination
-            result = subprocess.run(
-                f"find {dest_path} -type f | wc -l",
-                shell=True,
-                capture_output=True,
-                text=True
-            )
-            dest_count = int(result.stdout.strip()) if result.returncode == 0 else -1
+            result = subprocess.run(["find", source_path, "-type", "f"], capture_output=True, text=True)
+            source_count = len(result.stdout.splitlines()) if result.returncode == 0 else -1
+
+            result = subprocess.run(["find", dest_path, "-type", "f"], capture_output=True, text=True)
+            dest_count = len(result.stdout.splitlines()) if result.returncode == 0 else -1
             
             if source_count != dest_count or source_count < 0:
                 print(f"[ERROR] Verification failed: source={source_count} files, dest={dest_count} files", flush=True)
