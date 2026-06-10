@@ -67,7 +67,8 @@ backup_pools:
     pool: /path/to/backups
     pool_type: local
 
-staging_dir: /tmp/staging     # used for remote backup restore
+tmp_dir: /tmp                 # base dir for locks, task state, and staging (default: /tmp)
+staging_dir: /tmp/staging     # override staging path; defaults to {tmp_dir}/staging
 
 web_ui:
   port: 8000
@@ -77,7 +78,6 @@ web_ui:
 
 ## Known issues / vibe-code debt
 
-- `app/services/ssh_service.py` is dead code (deprecated, not imported anywhere useful)
 - Frontend JS in `main.js` is long and procedural — no modules, no component abstraction
 - No tests exist despite `tests/` stubs referenced in older docs
 - UI styling is ad-hoc — mix of inline styles and CSS classes

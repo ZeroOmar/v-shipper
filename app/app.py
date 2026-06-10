@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 
 from app.config import load_config
+from app.services.task_queue import get_task_queue
 from app.services.volume_service import get_volume_service
 from app.services.migration_service import get_migration_service
 from app.services.backup_service import get_backup_service
@@ -21,6 +22,9 @@ except Exception as e:
     print(f"[FATAL] Failed to load configuration: {e}", flush=True)
     raise
 
+# Initialize task queue first so tmp_dir is set before any service touches it
+get_task_queue(tmp_dir=config.tmp_dir)
+print(f"[APP] Using tmp_dir: {config.tmp_dir}", flush=True)
 
 # Initialize services
 get_volume_service(config)
@@ -41,7 +45,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="v-shipper",
     description="Docker Volume Migration Application",
-    version="0.0.7",
+    version="0.0.8",
     lifespan=lifespan
 )
 

@@ -30,12 +30,43 @@ class BackupService:
             return False
         
         # Create lock file
+        remote_source_staging = None
+        remote_staging_archive = None
         lock_file = self.task_queue.create_lockfile(source_pool_name, source_volume_name)
-        
+
         try:
             self.task_queue.start_task(task_id)
-            
-            source_path = f"{source_pool['path']}/{source_volume_name}"
+
+            # For remote source pools, pull volume to a local staging dir before archiving
+            if source_pool.get("pool_type") == "remote":
+                remote_source_staging = Path(self.config.tmp_dir) / f".backup_stage_{task_id}"
+                remote_source_staging.mkdir(parents=True, exist_ok=True)
+
+                self.task_queue.update_progress(task_id, {
+                    "current_operation": f"Pulling {source_volume_name} from remote pool",
+                    "progress_percent": 5
+                })
+
+                remote_src = self.volume_service._build_rsync_target(
+                    source_pool, source_volume_name, trailing_slash=False
+                )
+                pull_proc = subprocess.Popen(
+                    ["rsync", "-avz", remote_src, str(remote_source_staging) + "/"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
+                _, pull_stderr = pull_proc.communicate(timeout=600)
+
+                if pull_proc.returncode != 0:
+                    error_msg = f"Failed to pull volume from remote pool: {pull_stderr.strip()}"
+                    print(f"[ERROR] {error_msg}", flush=True)
+                    self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                    return False
+
+                source_path = str(remote_source_staging / source_volume_name)
+                print(f"[TASK:{task_id}] Pulled remote volume to {source_path}", flush=True)
+            else:
+                source_path = f"{source_pool['path']}/{source_volume_name}"
+
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
             archive_name = f"{source_volume_name}_backup_{timestamp}.tar.gz"
             
@@ -43,7 +74,8 @@ class BackupService:
             if backup_pool.get('pool_type') == 'remote':
                 staging_dir = Path(self.config.staging_dir)
                 staging_dir.mkdir(parents=True, exist_ok=True)
-                archive_path = str(staging_dir / archive_name)
+                remote_staging_archive = staging_dir / archive_name
+                archive_path = str(remote_staging_archive)
                 remote_backup_pool = backup_pool
             else:
                 # For local backup pools, create directly in pool directory
@@ -110,7 +142,11 @@ class BackupService:
         
         finally:
             self.task_queue.remove_lockfile(lock_file)
-    
+            if remote_source_staging and remote_source_staging.exists():
+                shutil.rmtree(remote_source_staging, ignore_errors=True)
+            if remote_staging_archive and remote_staging_archive.exists():
+                remote_staging_archive.unlink(missing_ok=True)
+
     def _create_archive(self, task_id: str, source_path: str, backup_path: str) -> bool:
         """Create tar.gz archive of volume."""
         
@@ -168,11 +204,13 @@ class BackupService:
             return False
 
         # Check if backup pool is remote - if so, pull the file via rsync first
+        pulled_backup_path = None
         if backup_pool.get('pool_type') == 'remote':
             staging_dir = Path(self.config.staging_dir)
             staging_dir.mkdir(parents=True, exist_ok=True)
             backup_path = staging_dir / backup_file
-            
+            pulled_backup_path = backup_path  # track for cleanup
+
             try:
                 # Pull backup file from remote pool via rsync (no trailing slash for files)
                 remote_target = self.volume_service._build_rsync_target(backup_pool, backup_file, trailing_slash=False)
@@ -183,13 +221,13 @@ class BackupService:
                     text=True
                 )
                 stdout, stderr = process.communicate(timeout=600)
-                
+
                 if process.returncode != 0:
                     error_msg = f"Failed to pull backup from remote pool: {stderr}"
                     print(f"[ERROR] {error_msg}", flush=True)
                     self.task_queue.complete_task(task_id, success=False, error=error_msg)
                     return False
-                
+
                 print(f"[INFO] Pulled backup file from remote pool to {backup_path}", flush=True)
             except Exception as e:
                 error_msg = f"Failed to fetch remote backup: {e}"
@@ -204,12 +242,24 @@ class BackupService:
             self.task_queue.complete_task(task_id, success=False, error=error_msg)
             return False
 
-        dest_path = Path(dest_pool['path']) / dest_volume_name
-
-        if dest_path.exists():
-            error_msg = "Restore destination already exists"
-            self.task_queue.complete_task(task_id, success=False, error=error_msg)
-            return False
+        # For remote destination: check existence via rsync list; for local: check path
+        remote_restore_target = None
+        restore_staging = None
+        if dest_pool.get('pool_type') == 'remote':
+            remote_restore_target = self.volume_service._build_rsync_target(dest_pool, trailing_slash=True)
+            chk_target = self.volume_service._build_rsync_target(dest_pool, dest_volume_name, trailing_slash=True)
+            chk_ok, chk_out, _ = self.volume_service._run_rsync_list(chk_target)
+            if chk_ok and chk_out.strip():
+                error_msg = "Restore destination already exists"
+                self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                return False
+            dest_path = None
+        else:
+            dest_path = Path(dest_pool['path']) / dest_volume_name
+            if dest_path.exists():
+                error_msg = "Restore destination already exists"
+                self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                return False
 
         lock_file = self.task_queue.create_lockfile(dest_pool_name, dest_volume_name)
 
@@ -220,13 +270,17 @@ class BackupService:
                 "progress_percent": 20
             })
 
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            is_remote_dest = dest_pool.get('pool_type') == 'remote'
 
-            # Extract into a temporary folder inside the destination pool to guarantee space
-            temp_extract_dir = Path(dest_pool['path']) / f".restore_temp_{int(time.time())}"
-            if temp_extract_dir.exists():
-                shutil.rmtree(temp_extract_dir)
-            temp_extract_dir.mkdir(parents=True, exist_ok=True)
+            if is_remote_dest:
+                restore_staging = Path(self.config.tmp_dir) / f".restore_stage_{task_id}"
+                restore_staging.mkdir(parents=True, exist_ok=True)
+                temp_extract_dir = restore_staging
+            else:
+                temp_extract_dir = Path(dest_pool['path']) / f".restore_temp_{int(time.time())}"
+                if temp_extract_dir.exists():
+                    shutil.rmtree(temp_extract_dir)
+                temp_extract_dir.mkdir(parents=True, exist_ok=True)
 
             process = subprocess.Popen(
                 ["tar", "-xzf", str(backup_path), "-C", str(temp_extract_dir)],
@@ -243,8 +297,7 @@ class BackupService:
                 shutil.rmtree(temp_extract_dir, ignore_errors=True)
                 return False
 
-            # Find the extracted volume directory and rename it to destination
-            extracted_items = [item for item in temp_extract_dir.iterdir() if item.name != '.' and item.name != '..']
+            extracted_items = [item for item in temp_extract_dir.iterdir() if item.name not in ('.', '..')]
             if not extracted_items:
                 error_msg = "Restore failed: backup archive contained no files"
                 self.task_queue.complete_task(task_id, success=False, error=error_msg)
@@ -252,14 +305,30 @@ class BackupService:
                 return False
 
             source_vol = extracted_items[0]
-            if source_vol.is_dir():
-                source_vol.rename(dest_path)
-            else:
-                dest_path.parent.mkdir(parents=True, exist_ok=True)
-                source_vol.rename(dest_path)
 
-            # Clean up temp directory if it is now empty
-            shutil.rmtree(temp_extract_dir, ignore_errors=True)
+            if is_remote_dest:
+                # Push extracted volume contents into dest_volume_name/ on remote
+                remote_dest = self.volume_service._build_rsync_target(dest_pool, dest_volume_name, trailing_slash=True)
+                src = str(source_vol) + ("/" if source_vol.is_dir() else "")
+                rsync_proc = subprocess.Popen(
+                    ["rsync", "-avz", src, remote_dest],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
+                _, rsync_stderr = rsync_proc.communicate(timeout=600)
+                shutil.rmtree(temp_extract_dir, ignore_errors=True)
+                if rsync_proc.returncode != 0:
+                    error_msg = f"Failed to transfer restore to remote pool: {rsync_stderr.strip()}"
+                    print(f"[ERROR] {error_msg}", flush=True)
+                    self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                    return False
+            else:
+                assert dest_path is not None
+                if source_vol.is_dir():
+                    source_vol.rename(dest_path)
+                else:
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    source_vol.rename(dest_path)
+                shutil.rmtree(temp_extract_dir, ignore_errors=True)
 
             self.task_queue.update_progress(task_id, {
                 "current_operation": "Verifying restore",
@@ -284,6 +353,10 @@ class BackupService:
             return False
         finally:
             self.task_queue.remove_lockfile(lock_file)
+            if restore_staging and restore_staging.exists():
+                shutil.rmtree(restore_staging, ignore_errors=True)
+            if pulled_backup_path and pulled_backup_path.exists():
+                pulled_backup_path.unlink(missing_ok=True)
 
     def _transfer_to_remote_backup(self, task_id: str, local_archive_path: str, 
                                    remote_pool: dict, archive_name: str) -> bool:

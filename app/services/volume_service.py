@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from threading import Lock, Thread
@@ -81,11 +82,15 @@ class VolumeService:
             target = f"{target.rstrip('/')}/"
         return target
 
-    def _run_rsync_list(self, target: str) -> tuple[bool, str, str]:
+    def _run_rsync_list(self, target: str, recursive: bool = False) -> tuple[bool, str, str]:
         """Run rsync --list-only for a remote target."""
         try:
+            cmd = ["rsync", "--list-only"]
+            if recursive:
+                cmd.append("-r")
+            cmd.append(target)
             process = subprocess.Popen(
-                ["rsync", "--list-only", target],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
@@ -109,13 +114,16 @@ class VolumeService:
             mode = parts[0]
             size = int(parts[1].replace(',', ''))
             name = parts[-1]
-            is_dir = name.endswith('/')
+            # Use mode string as primary check — trailing slash on dirs is unreliable
+            # across rsync versions and NAS rsync daemons
+            is_dir = mode[0] == 'd' if mode else name.endswith('/')
             return {"name": name, "size": size, "is_dir": is_dir, "mode": mode}
         except ValueError:
             return None
 
     def _list_remote_volumes(self, pool: Dict) -> tuple[List[VolumeInfo], List[str]]:
         """List volumes for a remote pool using rsync daemon listing."""
+        pool_name = pool.get("name", "")
         warnings = []
         try:
             target = self._build_rsync_target(pool)
@@ -125,26 +133,42 @@ class VolumeService:
                 return [], warnings
 
             volumes = []
+            missing_sizes = []
             for line in stdout.splitlines():
                 parsed = self._parse_rsync_list_line(line)
-                if not parsed:
-                    continue
-                name = parsed["name"]
-                if "/" in name.rstrip("/"):
-                    continue
-                if not parsed["is_dir"]:
+                if not parsed or not parsed["is_dir"]:
                     continue
 
-                volume_name = name.rstrip("/")
+                # Strip trailing slash and skip the module root entry
+                volume_name = parsed["name"].rstrip("/")
+                if not volume_name or volume_name == ".":
+                    continue
+                # Skip nested paths (e.g. "volume/_data")
+                if "/" in volume_name:
+                    continue
+
+                cached_bytes = self._get_cached_size(pool_name, volume_name)
+                if cached_bytes is None:
+                    size_loading = True
+                    size_bytes = 0
+                    missing_sizes.append(volume_name)
+                else:
+                    size_loading = False
+                    size_bytes = cached_bytes
+
                 volumes.append(VolumeInfo(
                     name=volume_name,
                     path=f"{target}{volume_name}/",
-                    size_gb=0.0,
-                    size_bytes=0,
-                    size_loading=True,
+                    size_gb=size_bytes / (1024 ** 3),
+                    size_bytes=size_bytes,
+                    size_loading=size_loading,
                     created_timestamp=None,
                     backups=[]
                 ))
+
+            if missing_sizes:
+                self._start_remote_volume_size_refresh(pool_name, pool, missing_sizes)
+
             return sorted(volumes, key=lambda v: v.name), warnings
         except Exception as e:
             warnings.append(f"Remote list failed: {e}")
@@ -188,7 +212,7 @@ class VolumeService:
         """Get total size of a remote volume or file via rsync listing."""
         try:
             target = self._build_rsync_target(pool, volume_name, trailing_slash=True)
-            success, stdout, stderr = self._run_rsync_list(target)
+            success, stdout, stderr = self._run_rsync_list(target, recursive=True)
             if not success:
                 return None
 
@@ -409,26 +433,34 @@ class VolumeService:
         # Handle remote pools via rsync
         if self._is_remote_pool(pool):
             try:
-                # Build rsync target without trailing slash for files
-                target = self._build_rsync_target(pool, volume_name, trailing_slash=False)
-                
-                # Use rsync to delete: sync an empty directory to remove all contents
-                # For a single file, we need to just touch it and remove source
-                process = subprocess.Popen(
-                    ["rsync", "--remove-source-files", "-r", target, "/tmp/.vshipper_delete_sink/"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
-                stdout, stderr = process.communicate(timeout=60)
-                
-                if process.returncode == 0 or "deleted" in stderr.lower() or "deleting" in stderr.lower():
+                # Sync an empty dir to the MODULE ROOT with include/exclude filters so that
+                # --delete targets only the specific volume directory. rsync will delete the
+                # volume dir and all its contents because it does not exist in the empty source.
+                # Other volumes are excluded from the delete scope and are left untouched.
+                module_target = self._build_rsync_target(pool, trailing_slash=True)
+                with tempfile.TemporaryDirectory() as empty_dir:
+                    process = subprocess.Popen(
+                        [
+                            "rsync", "-r", "--delete", "--force",
+                            "--include", f"/{volume_name}/",
+                            "--include", f"/{volume_name}/**",
+                            "--exclude", "*",
+                            empty_dir + "/", module_target
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+                    stdout, stderr = process.communicate(timeout=60)
+
+                if process.returncode == 0:
                     print(f"[INFO] Deleted {volume_name} from remote pool {pool_name}", flush=True)
+                    # Evict size cache so a stale entry doesn't resurface the deleted volume
+                    with self.size_lock:
+                        self.size_cache.get(pool_name, {}).pop(volume_name, None)
                     return True
                 else:
-                    # If rsync didn't delete, try alternative: use rsync to overwrite with empty
-                    error_msg = f"Delete via rsync: {stderr.strip()}"
-                    print(f"[WARNING] {error_msg}", flush=True)
+                    print(f"[WARNING] Remote delete failed: {stderr.strip()}", flush=True)
                     return False
             except subprocess.TimeoutExpired:
                 print(f"[ERROR] Delete operation timed out for {volume_name}", flush=True)
@@ -595,6 +627,26 @@ class VolumeService:
 
             def worker():
                 self._refresh_volume_sizes(pool_name, pool_path, volume_names)
+
+            thread = Thread(target=worker, daemon=True)
+            self.size_workers[pool_name] = thread
+            thread.start()
+
+    def _start_remote_volume_size_refresh(self, pool_name: str, pool: Dict, volume_names: List[str]):
+        """Start a background thread to compute sizes for remote docker host volumes via rsync."""
+        with self.size_lock:
+            existing_worker = self.size_workers.get(pool_name)
+            if existing_worker and existing_worker.is_alive():
+                return
+
+            def worker():
+                for volume_name in volume_names:
+                    try:
+                        size_bytes = self._get_remote_size(pool, volume_name) or 0
+                    except Exception as e:
+                        print(f"[WARNING] Failed to get remote size for {volume_name}: {e}", flush=True)
+                        size_bytes = 0
+                    self._cache_volume_size(pool_name, volume_name, size_bytes)
 
             thread = Thread(target=worker, daemon=True)
             self.size_workers[pool_name] = thread

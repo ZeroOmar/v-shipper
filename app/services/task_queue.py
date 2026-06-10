@@ -10,14 +10,14 @@ from pathlib import Path
 
 class TaskQueue:
     """Sequential task queue with progress tracking and locking."""
-    
-    def __init__(self):
+
+    def __init__(self, tmp_dir: str = "/tmp"):
         self.tasks: Dict[str, Dict[str, Any]] = {}
         self.lock = Lock()
         self.running_task_id: Optional[str] = None
-        self.locks_dir = Path("/tmp/locks")
-        self.locks_dir.mkdir(exist_ok=True)
-        self.tasks_file = Path("/tmp/vshipper_tasks.json")
+        self.locks_dir = Path(tmp_dir) / "locks"
+        self.locks_dir.mkdir(exist_ok=True, parents=True)
+        self.tasks_file = Path(tmp_dir) / "vshipper_tasks.json"
         self._load_tasks()
     
     def add_task(self, task_type: str, **kwargs) -> str:
@@ -147,10 +147,13 @@ class TaskQueue:
             print(f"[WARNING] Unable to save tasks: {e}", flush=True)
 
 
-# Global task queue instance
-_task_queue = TaskQueue()
+# Global task queue instance — lazily initialized so tmp_dir can be configured
+_task_queue: Optional[TaskQueue] = None
 
 
-def get_task_queue() -> TaskQueue:
-    """Get global task queue instance."""
+def get_task_queue(tmp_dir: str = "/tmp") -> TaskQueue:
+    """Get (or initialize) the global task queue. Pass tmp_dir only on the first call."""
+    global _task_queue
+    if _task_queue is None:
+        _task_queue = TaskQueue(tmp_dir=tmp_dir)
     return _task_queue

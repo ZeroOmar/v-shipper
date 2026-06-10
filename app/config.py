@@ -60,12 +60,15 @@ class ConfigManager:
                 admin_password=web_ui_config.get("admin_password", "")
             )
             
+            tmp_dir = config_dict.get("tmp_dir", "/tmp")
             self.config = AppConfig(
                 docker_hosts=docker_hosts,
                 backup_pools=backup_pools,
                 web_ui=web_ui,
-                staging_dir=config_dict.get("staging_dir", "/tmp/staging")
+                tmp_dir=tmp_dir,
+                staging_dir=config_dict.get("staging_dir", f"{tmp_dir}/staging")
             )
+            self.config_file_path = Path(tmp_dir) / "config.yaml"
             
             # Save to /tmp/config.yaml for reference
             self._save_config_to_file()

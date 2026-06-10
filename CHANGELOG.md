@@ -2,6 +2,27 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.0.8
+
+### Fixed
+
+- **Migration from remote source pool failed** — `source_path` was built from `pool['path']` which is `/` for remote pools, producing `//volume` (a nonexistent local path); now uses `_build_rsync_target` to construct a proper `rsync://` URL
+- **Migration from local to remote destination failed** — `dest_path` had the same `pool['path']` bug, causing rsync to write to `//volume` on the local filesystem instead of the remote daemon; now uses `_build_rsync_target` for remote destinations
+- **Migration verification reported 0 source files for remote pools** — `rsync --list-only` without `-r` only lists the top level of a volume directory (all directories, zero files); added `recursive=True` to listing calls used for verification and size calculation
+- **Migration verification reported -1 dest files for remote destinations** — `find` was called on the rsync URL string instead of the local path; remote destinations are now verified via recursive rsync listing
+- **Backup from remote source pool failed** — `tar` was given `//volume` as the source path (same `pool['path']` bug); remote source volumes are now pulled to a local staging dir via rsync first, then archived, and the staging dir is cleaned up in `finally`
+- **Restore to remote destination crashed with "Read-only file system"** — `temp_extract_dir` was constructed as `Path('/') / '.restore_temp_...'` for remote pools; extraction now happens in `{tmp_dir}/.restore_stage_{task_id}/` and the result is rsynced to the remote pool
+- **Restore to remote destination put files at pool root** — rsync target was the module root (`rsync://host/module/`) instead of the volume path; now uses `_build_rsync_target(pool, dest_volume_name, trailing_slash=True)`
+- **Remote volume delete left an empty directory that still appeared in the listing** — previous approach used `--remove-source-files` (deleted file content only, left empty dirs, accumulated a local sink that was never cleaned); replaced with targeted `rsync --delete --force` to the module root using include/exclude filters so the volume directory itself is removed
+- **Staging files accumulated and were never cleaned up** — remote source staging dirs (`.backup_stage_*`), remote staging archives (in `staging_dir`), downloaded backup archives, and restore staging dirs (`.restore_stage_*`) are now all tracked before `try` blocks and removed in `finally`
+- **Remote docker host volume sizes never resolved** — `_list_remote_volumes` always set `size_loading=True` with no background refresh; now uses the same cache + background-thread pattern (`_start_remote_volume_size_refresh`) as local pools
+
+### Changed
+
+- **`tmp_dir` is now configurable** — added `tmp_dir` YAML config key; task queue lock files, task state JSON, and staging dir all derive from it (default: `/tmp`). Useful for local development where `/tmp` is inconvenient.
+- **`TaskQueue` lazily initialized** — was eagerly constructed at import time (before config loaded), meaning `tmp_dir` had no effect on the paths it used; now initialized on first `get_task_queue(tmp_dir=...)` call from `app.py`
+- **Existence check for remote migration destination** — local pools check `Path.exists()`; remote pools now check via `_run_rsync_list` to avoid false positives from treating the rsync URL as a local path
+
 ## 0.0.7
 
 ### Fixed
@@ -24,6 +45,10 @@ All notable changes to v-shipper are documented in this file.
 ### Removed
 - **Dead `ssh_service.py`** — SSH support was removed in 0.0.3 but the file remained; deleted
 - **`import threading` / `import uuid` inside route functions** — moved to module level in `routes.py`
+
+### Fixed (remote docker host volumes)
+- **Remote docker host pools returned no volumes** — `_parse_rsync_list_line` detected directories by trailing slash (`name.endswith('/')`) which rsync daemons on some systems (NAS devices, older rsync versions) omit; switched to mode-string detection (`mode[0] == 'd'`) which is always present
+- **Remote docker host volumes never resolved size** — `_list_remote_volumes` always set `size_loading=True` with no background calculation, causing the size polling loop to run indefinitely; now uses the same cache + background-thread pattern as local volumes via `_start_remote_volume_size_refresh`
 
 ## 0.0.5
 

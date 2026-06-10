@@ -35,6 +35,7 @@ class AppConfig(BaseModel):
     docker_hosts: List[DockerHost] = Field(default_factory=list)
     backup_pools: List[BackupPool] = Field(default_factory=list)
     web_ui: WebUIConfig
+    tmp_dir: str = "/tmp"
     staging_dir: str = "/tmp/staging"
     
     @field_validator('docker_hosts', 'backup_pools', mode='before')
@@ -175,4 +176,4 @@ class PoolCreateRequest(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str = "ok"
-    version: str = "0.0.7"
+    version: str = "0.0.8"

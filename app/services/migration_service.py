@@ -35,14 +35,32 @@ class MigrationService:
         try:
             self.task_queue.start_task(task_id)
             
-            source_path = f"{source_pool['path']}/{source_volume_name}/"
-            dest_path = f"{dest_pool['path']}/{source_volume_name}"
+            if source_pool.get("pool_type") == "remote":
+                source_path = self.volume_service._build_rsync_target(
+                    source_pool, source_volume_name, trailing_slash=True
+                )
+            else:
+                source_path = f"{source_pool['path']}/{source_volume_name}/"
 
-            # Prevent overwriting an existing destination volume
-            if Path(dest_pool['path']).joinpath(source_volume_name).exists():
-                error_msg = "Destination volume already exists"
-                self.task_queue.complete_task(task_id, success=False, error=error_msg)
-                return False
+            if dest_pool.get("pool_type") == "remote":
+                dest_path = self.volume_service._build_rsync_target(
+                    dest_pool, source_volume_name, trailing_slash=False
+                )
+                # Check if destination already exists on remote
+                remote_check = self.volume_service._build_rsync_target(
+                    dest_pool, source_volume_name, trailing_slash=True
+                )
+                chk_ok, chk_out, _ = self.volume_service._run_rsync_list(remote_check)
+                if chk_ok and chk_out.strip():
+                    error_msg = "Destination volume already exists"
+                    self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                    return False
+            else:
+                dest_path = f"{dest_pool['path']}/{source_volume_name}"
+                if Path(dest_pool['path']).joinpath(source_volume_name).exists():
+                    error_msg = "Destination volume already exists"
+                    self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                    return False
 
             # Update progress
             self.task_queue.update_progress(task_id, {
@@ -65,7 +83,7 @@ class MigrationService:
             
             # Verify if requested
             if verify:
-                if not self._verify_migration(source_path, dest_path):
+                if not self._verify_migration(source_path, dest_path, source_pool, dest_pool):
                     error_msg = "Migration verification failed"
                     self.task_queue.complete_task(task_id, success=False, error=error_msg)
                     return False
@@ -168,23 +186,38 @@ class MigrationService:
         except Exception as e:
             print(f"[ERROR] Failed to clean up partial destination {dest_path}: {e}", flush=True)
 
-    def _verify_migration(self, source_path: str, dest_path: str) -> bool:
+    def _verify_migration(self, source_path: str, dest_path: str,
+                          source_pool: dict = None, dest_pool: dict = None) -> bool:
         """Verify that migration was successful."""
-        
         try:
-            result = subprocess.run(["find", source_path, "-type", "f"], capture_output=True, text=True)
-            source_count = len(result.stdout.splitlines()) if result.returncode == 0 else -1
+            if source_pool and source_pool.get("pool_type") == "remote":
+                # Count files via recursive rsync listing for remote source
+                success, stdout, _ = self.volume_service._run_rsync_list(source_path, recursive=True)
+                source_count = sum(
+                    1 for line in stdout.splitlines()
+                    if (p := self.volume_service._parse_rsync_list_line(line)) and not p["is_dir"]
+                ) if success else -1
+            else:
+                result = subprocess.run(["find", source_path, "-type", "f"], capture_output=True, text=True)
+                source_count = len(result.stdout.splitlines()) if result.returncode == 0 else -1
 
-            result = subprocess.run(["find", dest_path, "-type", "f"], capture_output=True, text=True)
-            dest_count = len(result.stdout.splitlines()) if result.returncode == 0 else -1
-            
+            if dest_pool and dest_pool.get("pool_type") == "remote":
+                success, stdout, _ = self.volume_service._run_rsync_list(dest_path.rstrip('/') + '/', recursive=True)
+                dest_count = sum(
+                    1 for line in stdout.splitlines()
+                    if (p := self.volume_service._parse_rsync_list_line(line)) and not p["is_dir"]
+                ) if success else -1
+            else:
+                result = subprocess.run(["find", dest_path, "-type", "f"], capture_output=True, text=True)
+                dest_count = len(result.stdout.splitlines()) if result.returncode == 0 else -1
+
             if source_count != dest_count or source_count < 0:
                 print(f"[ERROR] Verification failed: source={source_count} files, dest={dest_count} files", flush=True)
                 return False
-            
+
             print(f"[INFO] Verification passed: {source_count} files found in both locations", flush=True)
             return True
-        
+
         except Exception as e:
             print(f"[ERROR] Verification error: {e}", flush=True)
             return False
