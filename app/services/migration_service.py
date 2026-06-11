@@ -17,24 +17,26 @@ class MigrationService:
         self.task_queue = get_task_queue()
     
     def migrate_volume(self, task_id: str, source_pool_name: str, source_volume_name: str,
-                      dest_pool_name: str, verify: bool = True, delete_source: bool = False) -> bool:
+                      dest_pool_name: str, verify: bool = True, delete_source: bool = False,
+                      conflict_resolution: Optional[str] = None, rename_dest: Optional[str] = None) -> bool:
         """Migrate volume from source to destination pool."""
-        
-        # Get pool configurations
+
         source_pool = self.volume_service.get_pool_by_name(source_pool_name)
         dest_pool = self.volume_service.get_pool_by_name(dest_pool_name)
-        
+
         if not source_pool or not dest_pool:
             error_msg = "Source or destination pool not found"
             self.task_queue.complete_task(task_id, success=False, error=error_msg)
             return False
-        
-        # Create lock file
+
+        # Effective destination volume name (may differ from source when renaming)
+        effective_dest = rename_dest if conflict_resolution == 'rename' and rename_dest else source_volume_name
+
         lock_file = self.task_queue.create_lockfile(source_pool_name, source_volume_name)
-        
+
         try:
             self.task_queue.start_task(task_id)
-            
+
             if source_pool.get("pool_type") == "remote":
                 source_path = self.volume_service._build_rsync_target(
                     source_pool, source_volume_name, trailing_slash=True
@@ -44,32 +46,22 @@ class MigrationService:
 
             if dest_pool.get("pool_type") == "remote":
                 dest_path = self.volume_service._build_rsync_target(
-                    dest_pool, source_volume_name, trailing_slash=False
+                    dest_pool, effective_dest, trailing_slash=False
                 )
-                # Check if destination already exists on remote
-                remote_check = self.volume_service._build_rsync_target(
-                    dest_pool, source_volume_name, trailing_slash=True
-                )
-                chk_ok, chk_out, _ = self.volume_service._run_rsync_list(remote_check)
-                if chk_ok and chk_out.strip():
-                    error_msg = "Destination volume already exists"
-                    self.task_queue.complete_task(task_id, success=False, error=error_msg)
-                    return False
             else:
-                dest_path = f"{dest_pool['path']}/{source_volume_name}"
-                if Path(dest_pool['path']).joinpath(source_volume_name).exists():
-                    error_msg = "Destination volume already exists"
-                    self.task_queue.complete_task(task_id, success=False, error=error_msg)
-                    return False
+                dest_path = f"{dest_pool['path']}/{effective_dest}"
 
             # Update progress
             self.task_queue.update_progress(task_id, {
                 "current_operation": f"Migrating {source_volume_name} from {source_pool_name} to {dest_pool_name}",
                 "progress_percent": 10
             })
-            
-            # Execute rsync
-            rsync_success, rsync_error = self._rsync_volume(task_id, source_path, dest_path, source_pool, dest_pool)
+
+            # Execute rsync (--delete when overwriting to make it a complete replacement)
+            overwrite = conflict_resolution == 'overwrite'
+            rsync_success, rsync_error = self._rsync_volume(
+                task_id, source_path, dest_path, source_pool, dest_pool, overwrite=overwrite
+            )
             if not rsync_success:
                 error_msg = rsync_error or "Rsync failed"
                 self.task_queue.complete_task(task_id, success=False, error=error_msg)
@@ -114,10 +106,9 @@ class MigrationService:
             self.task_queue.remove_lockfile(lock_file)
     
     def _rsync_volume(self, task_id: str, source_path: str, dest_path: str,
-                     source_pool: dict, dest_pool: dict) -> tuple[bool, str]:
-        
+                     source_pool: dict, dest_pool: dict, overwrite: bool = False) -> tuple[bool, str]:
+
         try:
-            # Build rsync command with permission preservation
             rsync_cmd = [
                 "rsync",
                 "-av",
@@ -126,9 +117,11 @@ class MigrationService:
                 "--owner",
                 "--progress",
                 "--no-whole-file",
-                "--inplace"
+                "--inplace",
             ]
-            
+            if overwrite:
+                rsync_cmd.append("--delete")
+
             rsync_cmd.extend([source_path, dest_path])
             
             print(f"[TASK:{task_id}] Running rsync: {' '.join(rsync_cmd)}", flush=True)

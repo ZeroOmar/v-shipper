@@ -5,6 +5,7 @@ import threading
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Depends, Request, Response
+from fastapi.responses import JSONResponse
 from app.models import (
     LoginRequest, PoolsListResponse, VolumesListResponse, VolumeDetailResponse,
     MigrateRequest, BackupRequest, RenameRequest, DeleteRequest, RestoreRequest, PoolCreateRequest,
@@ -17,6 +18,19 @@ from app.services.task_queue import get_task_queue
 from app.config import validate_auth, get_config
 
 router = APIRouter()
+
+
+def _volume_exists_in_pool(volume_service, pool: dict, volume_name: str) -> bool:
+    """Return True if volume_name already exists in the given pool."""
+    try:
+        if pool.get('pool_type') == 'remote':
+            target = volume_service._build_rsync_target(pool, volume_name, trailing_slash=True)
+            ok, out, _ = volume_service._run_rsync_list(target)
+            return ok and bool(out.strip())
+        return Path(pool['path']).joinpath(volume_name).exists()
+    except Exception:
+        return False
+
 
 # Session storage (simple in-memory, per-session)
 sessions = {}
@@ -105,11 +119,13 @@ async def list_pools(session: dict = Depends(require_auth)):
                 "path": host.pool,
                 "type": host.pool_type,
                 "pool_type": host.pool_type,
+                "remote_host": host.remote_host,
+                "rsync_module": host.rsync_module,
                 "role": "docker"
             }
             stats = volume_service.get_pool_stats(pool_info)
             pools_stats.append(stats)
-        
+
         # Add backup pools
         for backup in config.backup_pools:
             pool_info = {
@@ -117,6 +133,8 @@ async def list_pools(session: dict = Depends(require_auth)):
                 "path": backup.pool,
                 "type": "backup",
                 "pool_type": backup.pool_type,
+                "remote_host": backup.remote_host,
+                "rsync_module": backup.rsync_module,
                 "role": "backup"
             }
             stats = volume_service.get_pool_stats(pool_info)
@@ -172,21 +190,40 @@ async def migrate_volume(request: MigrateRequest, session: dict = Depends(requir
         volume_service = get_volume_service(config)
         migration_service = get_migration_service(config, volume_service)
         task_queue = get_task_queue()
-        
-        # Check if source volume is locked
+
         if task_queue.is_volume_locked(request.source_pool, request.source_volume):
             raise HTTPException(status_code=409, detail="Volume is locked by another operation")
-        
-        # Create task
+
+        # Determine effective destination name
+        effective_dest = (
+            request.rename_dest
+            if request.conflict_resolution == 'rename' and request.rename_dest
+            else request.source_volume
+        )
+
+        # Pre-check: if no resolution (or rename), verify dest doesn't already exist
+        if request.conflict_resolution in (None, 'rename'):
+            dest_pool = volume_service.get_pool_by_name(request.dest_pool)
+            if dest_pool and _volume_exists_in_pool(volume_service, dest_pool, effective_dest):
+                return JSONResponse(status_code=409, content={
+                    "detail": {
+                        "code": "destination_exists",
+                        "dest_volume": effective_dest,
+                        "dest_pool": request.dest_pool,
+                    }
+                })
+
         task_id = task_queue.add_task(
             task_type="migrate",
             source_pool=request.source_pool,
             source_volume=request.source_volume,
             dest_pool=request.dest_pool,
             verify=request.verify,
-            delete_source=request.delete_source
+            delete_source=request.delete_source,
+            conflict_resolution=request.conflict_resolution,
+            rename_dest=request.rename_dest,
         )
-        
+
         def _migrate():
             migration_service.migrate_volume(
                 task_id,
@@ -194,14 +231,14 @@ async def migrate_volume(request: MigrateRequest, session: dict = Depends(requir
                 request.source_volume,
                 request.dest_pool,
                 verify=request.verify,
-                delete_source=request.delete_source
+                delete_source=request.delete_source,
+                conflict_resolution=request.conflict_resolution,
+                rename_dest=request.rename_dest,
             )
-        
-        thread = threading.Thread(target=_migrate, daemon=True)
-        thread.start()
-        
+
+        threading.Thread(target=_migrate, daemon=True).start()
         return TaskResponse(task_id=task_id, status="pending", progress_percent=0)
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -331,13 +368,33 @@ async def restore_backup(request: RestoreRequest, session: dict = Depends(requir
         backup_service = get_backup_service(config, volume_service)
         task_queue = get_task_queue()
 
+        # Effective dest name: use rename_dest when resolution is 'rename'
+        effective_dest = (
+            request.rename_dest
+            if request.conflict_resolution == 'rename' and request.rename_dest
+            else request.dest_volume
+        )
+
+        # Pre-check: if no resolution (or rename), verify dest doesn't already exist
+        if request.conflict_resolution in (None, 'rename'):
+            dest_pool = volume_service.get_pool_by_name(request.dest_pool)
+            if dest_pool and _volume_exists_in_pool(volume_service, dest_pool, effective_dest):
+                return JSONResponse(status_code=409, content={
+                    "detail": {
+                        "code": "destination_exists",
+                        "dest_volume": effective_dest,
+                        "dest_pool": request.dest_pool,
+                    }
+                })
+
         task_id = task_queue.add_task(
             task_type="restore",
             backup_pool=request.backup_pool,
             backup_file=request.backup_file,
             dest_pool=request.dest_pool,
-            dest_volume_name=request.dest_volume,
-            verify=True
+            dest_volume_name=effective_dest,
+            verify=True,
+            conflict_resolution=request.conflict_resolution,
         )
 
         def _restore():
@@ -346,12 +403,11 @@ async def restore_backup(request: RestoreRequest, session: dict = Depends(requir
                 request.backup_pool,
                 request.backup_file,
                 request.dest_pool,
-                request.dest_volume
+                effective_dest,
+                conflict_resolution=request.conflict_resolution,
             )
 
-        thread = threading.Thread(target=_restore, daemon=True)
-        thread.start()
-
+        threading.Thread(target=_restore, daemon=True).start()
         return TaskResponse(task_id=task_id, status="pending", task_type="restore", progress_percent=0)
     except HTTPException:
         raise
@@ -480,10 +536,11 @@ async def get_task_progress(task_id: str, session: dict = Depends(require_auth))
 
 @router.get("/api/task/{task_id}/logs")
 async def get_task_logs(task_id: str, session: dict = Depends(require_auth)):
-    """Get task logs."""
-    # Note: Logs are printed to stdout, not stored in app
+    """Get captured log lines for a task."""
+    config = get_config()
+    tmp_dir = str(config.tmp_dir) if config.tmp_dir else "/tmp"
+    task_queue = get_task_queue(tmp_dir=tmp_dir)
     return {
-        "status": "ok",
-        "message": "Task logs are available in container stdout. Use 'docker logs' to view.",
-        "task_id": task_id
+        "task_id": task_id,
+        "lines": task_queue.get_task_logs(task_id)
     }

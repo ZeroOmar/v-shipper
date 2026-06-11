@@ -1,11 +1,46 @@
 """Task queue and progress tracking."""
 
+import re
+import sys
 import uuid
 import json
 import time
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 from threading import Thread, Lock
 from pathlib import Path
+
+MAX_TASK_LOG_LINES = 300
+
+_TASK_LOG_RE = re.compile(r'^\[TASK:([a-f0-9-]+)\]\s*(.*)', re.IGNORECASE)
+
+
+class _TaskLogCapture:
+    """Wraps sys.stdout to route [TASK:id] prefixed lines into the in-memory log buffer."""
+
+    def __init__(self, original, queue: "TaskQueue"):
+        self._orig = original
+        self._queue = queue
+
+    def write(self, text: str) -> int:
+        n = self._orig.write(text)
+        current_task_id = None
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            m = _TASK_LOG_RE.match(stripped)
+            if m:
+                current_task_id = m.group(1)
+                self._queue.log_task(m.group(1), m.group(2))
+            elif current_task_id:
+                # Continuation line within the same write() — attribute to the same task
+                self._queue.log_task(current_task_id, stripped)
+        return n or 0
+
+    def flush(self):           self._orig.flush()
+    def isatty(self):          return getattr(self._orig, "isatty", lambda: False)()
+    def fileno(self):          return self._orig.fileno()
+    def __getattr__(self, n):  return getattr(self._orig, n)
 
 
 class TaskQueue:
@@ -14,6 +49,8 @@ class TaskQueue:
     def __init__(self, tmp_dir: str = "/tmp"):
         self.tasks: Dict[str, Dict[str, Any]] = {}
         self.lock = Lock()
+        self.log_lock = Lock()
+        self.log_lines: Dict[str, List[str]] = {}
         self.running_task_id: Optional[str] = None
         self.locks_dir = Path(tmp_dir) / "locks"
         self.locks_dir.mkdir(exist_ok=True, parents=True)
@@ -122,6 +159,19 @@ class TaskQueue:
         """Get lock file path for volume."""
         return str(self.locks_dir / f"{pool}_{volume}.lock")
 
+    def log_task(self, task_id: str, message: str):
+        """Append a log line to a task's in-memory buffer."""
+        with self.log_lock:
+            buf = self.log_lines.setdefault(task_id, [])
+            buf.append(message)
+            if len(buf) > MAX_TASK_LOG_LINES:
+                del buf[0]
+
+    def get_task_logs(self, task_id: str) -> List[str]:
+        """Return captured log lines for a task."""
+        with self.log_lock:
+            return list(self.log_lines.get(task_id, []))
+
     def _load_tasks(self):
         """Load persisted tasks from disk."""
         try:
@@ -156,4 +206,7 @@ def get_task_queue(tmp_dir: str = "/tmp") -> TaskQueue:
     global _task_queue
     if _task_queue is None:
         _task_queue = TaskQueue(tmp_dir=tmp_dir)
+        # Install stdout interceptor once so all [TASK:id] print()s flow into the log buffer
+        if not isinstance(sys.stdout, _TaskLogCapture):
+            sys.stdout = _TaskLogCapture(sys.stdout, _task_queue)
     return _task_queue

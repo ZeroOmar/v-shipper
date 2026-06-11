@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from threading import Lock, Thread
 from typing import Any, List, Dict, Optional
@@ -117,7 +118,13 @@ class VolumeService:
             # Use mode string as primary check — trailing slash on dirs is unreliable
             # across rsync versions and NAS rsync daemons
             is_dir = mode[0] == 'd' if mode else name.endswith('/')
-            return {"name": name, "size": size, "is_dir": is_dir, "mode": mode}
+            ts = None
+            if len(parts) >= 4:
+                try:
+                    ts = int(datetime.strptime(f"{parts[2]} {parts[3]}", "%Y/%m/%d %H:%M:%S").timestamp())
+                except (ValueError, IndexError):
+                    ts = None
+            return {"name": name, "size": size, "is_dir": is_dir, "mode": mode, "created_timestamp": ts}
         except ValueError:
             return None
 
@@ -162,7 +169,7 @@ class VolumeService:
                     size_gb=size_bytes / (1024 ** 3),
                     size_bytes=size_bytes,
                     size_loading=size_loading,
-                    created_timestamp=None,
+                    created_timestamp=parsed.get("created_timestamp"),
                     backups=[]
                 ))
 
@@ -200,7 +207,7 @@ class VolumeService:
                     size_gb=parsed["size"] / (1024 ** 3),
                     size_bytes=parsed["size"],
                     size_loading=False,
-                    created_timestamp=None,
+                    created_timestamp=parsed.get("created_timestamp"),
                     backups=[]
                 ))
             return sorted(volumes, key=lambda v: v.name), warnings
@@ -229,10 +236,10 @@ class VolumeService:
             return None
 
     def _get_remote_pool_total_size(self, pool: Dict) -> int:
-        """Calculate total size of all files in a remote pool."""
+        """Calculate total size of all files in a remote pool (recursive)."""
         try:
             target = self._build_rsync_target(pool)
-            success, stdout, stderr = self._run_rsync_list(target)
+            success, stdout, stderr = self._run_rsync_list(target, recursive=True)
             if not success:
                 return 0
 

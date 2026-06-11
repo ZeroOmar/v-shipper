@@ -2,6 +2,34 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.0.9
+
+### Added
+
+- **Task detail modal** — clicking any task card opens a detail view showing task parameters, elapsed time, and captured log output; live-polls while the task is running
+- **Per-task log capture** — `TaskQueue` installs a stdout interceptor on startup that routes `[TASK:id]` prefixed print lines into an in-memory buffer per task; multiline messages (e.g. rsync error blocks) are fully captured as continuation lines in the same write call
+- **`GET /api/task/{task_id}/logs` endpoint** — returns captured log lines for a task; used by the task detail modal
+- **Conflict resolution on migrate/restore** — when the destination volume already exists, a modal prompts the user to choose: overwrite (rsync `--delete` to completely replace), merge (add/update files, keep extras), rename to a new volume name, or abort; closing the modal also aborts
+- **Live rsync progress for backup/restore** — all rsync transfers in `backup_service.py` now stream output line-by-line; `--progress` flag added so per-file transfer rate and percentage appear in the task log and update the progress bar in real time
+
+### Fixed
+
+- **Remote pools showed "⚠ Unreachable"** — `list_pools` built pool dicts without `remote_host` and `rsync_module`, causing `_build_rsync_target` to raise `ValueError` that was silently caught as `reachable=False`; both fields are now forwarded for docker hosts and backup pools
+- **Remote docker pool size showed 0 GB** — `_get_remote_pool_total_size` used a non-recursive rsync listing; volume pools have only directories at the module root so file sizes summed to zero; now uses `recursive=True`
+- **Created date missing for remote volumes** — `_parse_rsync_list_line` always returned `None` for `created_timestamp`; now parses the date and time fields from rsync `--list-only` output
+- **Multiline log messages truncated to first line** — `_TaskLogCapture.write()` split on newlines but only captured lines matching `[TASK:xxx]`; continuation lines within the same write call are now attributed to the same task
+- **Restore timed out on large archives** — `communicate(timeout=600)` hard-killed rsync after 10 minutes even when transfer was still in progress; replaced with unbounded line-by-line streaming reads across all rsync calls in the backup service
+- **Restore task showed "pending" during long remote downloads** — `start_task` was called only after the remote pull completed; now called at the start so the task shows as running and progress is visible from the first byte
+
+### Changed
+
+- **Backup archive filenames shortened** — removed the redundant word "backup": `volname_backup_YYYYMMDD_HHMMSS.tar.gz` → `volname_YYYYMMDD_HHMMSS.tar.gz`
+- **Task card no longer shows error message** — error details are now shown in the task detail modal; the card shows only status chip, type, target, and progress bar
+- **UI redesigned with Material Design 3** — CSS custom-property color token system (light/dark), themed scrollbars, 2-row mobile header (brand + user on row 1, tools on row 2)
+- **Task history labels show pool context** — labels now read `source_pool/volume → dest_pool` instead of just the volume name
+- **Dates displayed as DD/MM/YYYY** — replaced locale-dependent `toLocaleDateString()` with a consistent `formatDate()` helper throughout the UI
+- **Favicon added** — Docker icon shown in browser tab
+
 ## 0.0.8
 
 ### Fixed

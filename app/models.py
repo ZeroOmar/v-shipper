@@ -135,6 +135,8 @@ class MigrateRequest(BaseModel):
     dest_pool: str
     verify: bool = True
     delete_source: bool = False
+    conflict_resolution: Optional[str] = None  # 'overwrite', 'merge', 'rename'
+    rename_dest: Optional[str] = None
 
 
 class BackupRequest(BaseModel):
@@ -165,6 +167,8 @@ class RestoreRequest(BaseModel):
     backup_file: str
     dest_pool: str
     dest_volume: str
+    conflict_resolution: Optional[str] = None  # 'overwrite', 'merge', 'rename'
+    rename_dest: Optional[str] = None
 
 
 class PoolCreateRequest(BaseModel):
@@ -176,4 +180,4 @@ class PoolCreateRequest(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str = "ok"
-    version: str = "0.0.8"
+    version: str = "0.0.9"

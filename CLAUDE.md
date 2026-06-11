@@ -29,7 +29,7 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 | `app/services/volume_service.py` | Volume discovery, disk stats, rename/delete |
 | `app/services/migration_service.py` | rsync orchestration, lockfiles |
 | `app/services/backup_service.py` | tar archiving, remote restore via staging |
-| `app/services/task_queue.py` | Sequential queue, progress tracking, crash recovery |
+| `app/services/task_queue.py` | Sequential queue, progress tracking, crash recovery, per-task log capture |
 | `app/templates/index.html` | SPA shell |
 | `app/static/main.js` | All client logic — polling, modals, progress |
 | `app/static/style.css` | Styling |
@@ -42,7 +42,7 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 - **Progress** stored in-memory, polled by frontend every 2s via `GET /api/task/<id>/progress`
 - **Task persistence** to `/tmp/vshipper_tasks.json` — incomplete tasks → marked failed on restart
 - **Remote pools** are rsync daemon targets (not SSH, not mounted FS); local pools are direct paths
-- **Log to stdout** with `print(..., flush=True)` — prefix `[TASK:id]` for task logs
+- **Log to stdout** with `print(..., flush=True)` — prefix `[TASK:id]` for task logs; a stdout interceptor in `task_queue.py` captures these into an in-memory per-task buffer, retrievable via `GET /api/task/<id>/logs`
 
 ## Adding a new operation
 
@@ -80,6 +80,5 @@ web_ui:
 
 - Frontend JS in `main.js` is long and procedural — no modules, no component abstraction
 - No tests exist despite `tests/` stubs referenced in older docs
-- UI styling is ad-hoc — mix of inline styles and CSS classes
-- Error messages from backend are surfaced inconsistently in the UI
 - No input validation on volume/pool names (path traversal risk at boundaries)
+- Per-task log buffer is in-memory only — logs are lost on server restart

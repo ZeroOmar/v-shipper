@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>v-shipper - Docker Volume Migration</title>
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" type="image/svg+xml" href="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/docker.svg">
 </head>
 <body>
     <!-- Login Screen -->
@@ -27,16 +28,20 @@
     <div id="dashboard" class="dashboard">
         <header>
             <div class="container">
-                <div class="header-brand">
-                    <img class="brand-icon" src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/docker.svg" alt="Docker">
-                    <h1>v-shipper</h1>
-                </div>
-                <div class="header-controls">
-                    <button class="btn" onclick="runTroubleshootCleanup()">🧹 Cleanup</button>
-                    <button class="btn" id="themeToggleButton" onclick="toggleTheme()">🎨 System</button>
-                    <button class="btn" onclick="loadPools()">🔄</button>
-                    <span class="header-user">🫵 <strong id="currentUser">admin</strong></span>
-                    <button class="btn danger" onclick="logout()">Logout</button>
+                <div class="header-inner">
+                    <div class="header-brand">
+                        <img class="brand-icon" src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/docker.svg" alt="Docker">
+                        <h1>v-shipper</h1>
+                    </div>
+                    <div class="header-tools">
+                        <button class="btn tonal" onclick="runTroubleshootCleanup()">🧹 Cleanup</button>
+                        <button class="btn tonal" id="themeToggleButton" onclick="toggleTheme()">🎨 System</button>
+                        <button class="btn tonal" onclick="loadPools()" title="Refresh">🔄</button>
+                    </div>
+                    <div class="header-user-section">
+                        <span class="header-user">👤 <strong id="currentUser">admin</strong></span>
+                        <button class="btn danger" onclick="logout()">Logout</button>
+                    </div>
                 </div>
             </div>
         </header>
@@ -107,6 +112,28 @@
     <div id="progressModal" class="modal">
         <div class="modal-content">
             <!-- Content populated by JavaScript -->
+        </div>
+    </div>
+
+    <!-- Conflict Resolution Modal -->
+    <div id="conflictModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Volume Already Exists</h3>
+                <button class="close-btn" onclick="abortConflict()">×</button>
+            </div>
+            <div id="conflictModalBody" class="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- Task Detail Modal -->
+    <div id="taskDetailModal" class="modal">
+        <div class="modal-content modal-lg">
+            <div class="modal-header">
+                <h3 id="taskDetailTitle">Task Details</h3>
+                <button class="close-btn" onclick="closeTaskDetail()">×</button>
+            </div>
+            <div id="taskDetailBody" class="modal-body"></div>
         </div>
     </div>
 

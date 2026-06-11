@@ -18,6 +18,14 @@ const AUTO_REFRESH_INTERVAL = 30000; // 30 seconds
 const MAX_TASK_HISTORY = 10; // Keep last 10 tasks
 const MAX_LOAD_FAILURES = 3; // Logout after 3 consecutive failures
 
+// ============ Utilities ============
+
+function formatDate(ts) {
+    if (!ts) return 'N/A';
+    const d = new Date(ts * 1000);
+    return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+}
+
 // ============ Initialization ============
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -173,28 +181,29 @@ function displayPools(pools) {
             ? pool.role === 'backup'
                 ? `📦 ${metadata.backup_count} backups`
                 : `📂 ${metadata.volume_count} volumes`
-            : 'Loading counts...';
-        
+            : 'Loading...';
+
+        const isRemote = pool.pool_type === 'remote';
+        const statsHtml = isRemote
+            ? `<div class="stat"><div class="stat-label">Used</div><div class="stat-value">${pool.total_gb.toFixed(1)} GB</div></div>
+               <div class="stat"><div class="stat-label">Free</div><div class="stat-value">N/A</div></div>`
+            : `<div class="stat"><div class="stat-label">Free</div><div class="stat-value">${pool.available_gb.toFixed(1)} GB</div></div>
+               <div class="stat"><div class="stat-label">Usage</div><div class="stat-value">${usagePercent.toFixed(0)}%</div></div>`;
+        const usageBarHtml = isRemote ? '' : `
+            <div class="progress-bar" style="margin-top: 8px;">
+                <div class="progress-fill" style="width: ${Math.min(usagePercent, 100)}%"></div>
+            </div>`;
+        const reachableHtml = pool.reachable === false
+            ? `<div class="pool-unreachable">⚠ Unreachable</div>` : '';
+
         poolEl.innerHTML = `
             <div style="cursor: pointer;" onclick="selectPool('${pool.name}')">
                 <div class="pool-name">${pool.name}</div>
-                <div class="pool-type">${pool.role === 'backup' ? 'Backup' : 'Docker'} (${pool.pool_type})</div>
-                <div class="pool-counts" style="margin-top: 6px; font-size: 12px; color: #7f8c8d;">
-                    ${countLabel}
-                </div>
-                <div class="pool-stats" style="margin-top: 8px;">
-                    <div class="stat">
-                        <div class="stat-label">Free</div>
-                        <div class="stat-value">${pool.available_gb.toFixed(1)} GB</div>
-                    </div>
-                    <div class="stat">
-                        <div class="stat-label">Usage</div>
-                        <div class="stat-value">${usagePercent.toFixed(0)}%</div>
-                    </div>
-                </div>
-                <div class="progress-bar" style="margin-top: 8px;">
-                    <div class="progress-fill" style="width: ${Math.min(usagePercent, 100)}%"></div>
-                </div>
+                <div class="pool-type">${pool.role === 'backup' ? 'Backup' : 'Docker'} · ${pool.pool_type}</div>
+                <div class="pool-counts">${countLabel}</div>
+                ${reachableHtml}
+                <div class="pool-stats" style="margin-top: 8px;">${statsHtml}</div>
+                ${usageBarHtml}
             </div>
         `;
         
@@ -264,22 +273,23 @@ function displayVolumes(poolName, volumes, warnings = []) {
             const sizeText = volume.size_loading
                 ? `<span class="loading-spinner" style="width: 14px; height: 14px; border-width: 2px;"></span> Calculating...`
                 : formatVolumeSize(volume.size_bytes, volume.size_gb);
-            const created = volume.created_timestamp ? new Date(volume.created_timestamp * 1000).toLocaleDateString() : 'N/A';
+            const created = formatDate(volume.created_timestamp);
             const backupCount = volume.backups && volume.backups.length > 0 ? volume.backups.length : 0;
-            
+            const backupLabel = backupCount ? ` · ${backupCount} backup${backupCount !== 1 ? 's' : ''}` : '';
+
             html += `
                 <div class="volume-item">
                     <div class="volume-info">
                         <div class="volume-name">${volume.name}</div>
                         <div class="volume-details">
-                            Size: ${sizeText} | Created: ${created}
-                            ${backupCount ? ` | Backups: ${backupCount}` : ''}
+                            <span class="volume-size">${sizeText}</span>
+                            <span class="volume-meta">Created: ${created}${backupLabel}</span>
                         </div>
                     </div>
                     <div class="volume-actions">
-                        ${poolRole !== 'backup' ? `<button class="btn" style="font-size: 11px;" onclick="openMigrateModal('${poolName}', '${volume.name}')">Migrate</button>` : ''}
-                        ${poolRole !== 'backup' ? `<button class="btn" style="font-size: 11px;" onclick="openBackupModal('${poolName}', '${volume.name}')">Backup</button>` : `<button class="btn" style="font-size: 11px;" onclick="openRestoreModal('${poolName}', '${volume.name}')">Restore</button>`}
-                        <button class="btn danger" style="font-size: 11px;" onclick="openDeleteModal('${poolName}', '${volume.name}')">Delete</button>
+                        ${poolRole !== 'backup' ? `<button class="btn vol-btn" onclick="openMigrateModal('${poolName}', '${volume.name}')">Migrate</button>` : ''}
+                        ${poolRole !== 'backup' ? `<button class="btn vol-btn" onclick="openBackupModal('${poolName}', '${volume.name}')">Backup</button>` : `<button class="btn vol-btn" onclick="openRestoreModal('${poolName}', '${volume.name}')">Restore</button>`}
+                        <button class="btn danger vol-btn" onclick="openDeleteModal('${poolName}', '${volume.name}')">Delete</button>
                     </div>
                 </div>
             `;
@@ -374,32 +384,47 @@ async function startMigration(sourcePool, sourceVolume) {
     const destPool = document.getElementById('destPool').value;
     const verify = document.getElementById('migrateVerify').checked;
     const deleteSource = document.getElementById('migrateDelete').checked;
-    
+
     if (!destPool) {
         showError('Please select destination pool');
         return;
     }
-    
+
+    await _doMigrate({
+        source_pool: sourcePool,
+        source_volume: sourceVolume,
+        dest_pool: destPool,
+        verify,
+        delete_source: deleteSource,
+    });
+}
+
+async function _doMigrate(params) {
     try {
         const response = await fetch(`${API_BASE}/migrate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                source_pool: sourcePool,
-                source_volume: sourceVolume,
-                dest_pool: destPool,
-                verify: verify,
-                delete_source: deleteSource
-            })
+            body: JSON.stringify(params),
         });
-        
+
+        if (response.status === 409) {
+            const body = await response.json();
+            const d = body.detail;
+            if (d && d.code === 'destination_exists') {
+                closeModal('migrateModal');
+                _showConflictModal(d.dest_volume, d.dest_pool, (resolution, renameVal) => {
+                    _doMigrate({ ...params, conflict_resolution: resolution, rename_dest: renameVal || undefined });
+                });
+                return;
+            }
+        }
+
         const data = await response.json();
-        
         if (response.ok) {
             closeModal('migrateModal');
             showTaskProgress(data.task_id);
         } else {
-            showError(data.detail);
+            showError(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
         }
     } catch (error) {
         showError(`Migration error: ${error.message}`);
@@ -482,7 +507,7 @@ async function startBackup(sourcePool, sourceVolume) {
 function openRestoreModal(backupPool, backupFile) {
     const modal = document.getElementById('backupModal');
     const content = modal.querySelector('.modal-content');
-    const defaultVolume = backupFile.split('_backup_')[0] || backupFile.replace(/\.tar\.gz$/, '');
+    const defaultVolume = backupFile.replace(/\.tar\.gz$/, '').replace(/_\d{8}_\d{6}$/, '');
 
     content.innerHTML = `
         <div class="modal-header">
@@ -523,25 +548,46 @@ async function startRestore(backupPool, backupFile) {
         return;
     }
 
+    await _doRestore({
+        backup_pool: backupPool,
+        backup_file: backupFile,
+        dest_pool: destPool,
+        dest_volume: destVolume,
+    });
+}
+
+async function _doRestore(params) {
     try {
         const response = await fetch(`${API_BASE}/restore`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                backup_pool: backupPool,
-                backup_file: backupFile,
-                dest_pool: destPool,
-                dest_volume: destVolume
-            })
+            body: JSON.stringify(params),
         });
 
-        const data = await response.json();
+        if (response.status === 409) {
+            const body = await response.json();
+            const d = body.detail;
+            if (d && d.code === 'destination_exists') {
+                closeModal('backupModal');
+                _showConflictModal(d.dest_volume, d.dest_pool, (resolution, renameVal) => {
+                    _doRestore({
+                        ...params,
+                        conflict_resolution: resolution,
+                        rename_dest: renameVal || undefined,
+                        // For restore, when renaming update dest_volume too
+                        ...(resolution === 'rename' && renameVal ? { dest_volume: renameVal } : {}),
+                    });
+                });
+                return;
+            }
+        }
 
+        const data = await response.json();
         if (response.ok) {
             closeModal('backupModal');
             showTaskProgress(data.task_id);
         } else {
-            showError(data.detail);
+            showError(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
         }
     } catch (error) {
         showError(`Restore error: ${error.message}`);
@@ -727,25 +773,32 @@ function addOrUpdateTaskHistory(task) {
 function getTaskTargetLabel(task) {
     const params = task.params || {};
     if (task.task_type === 'delete') {
-        return params.volume_name || params.source_volume || params.volume || 'Delete operation';
+        const pool = params.pool || '';
+        const vol = params.volume_name || params.source_volume || params.volume || '';
+        return pool && vol ? `${pool}/${vol}` : (vol || 'Delete operation');
     }
     if (task.task_type === 'backup') {
         if (params.source_volume) {
-            return `Backup ${params.source_volume} to ${params.backup_pool || 'backup pool'}`;
+            const src = params.source_pool ? `${params.source_pool}/` : '';
+            return `${src}${params.source_volume} → ${params.backup_pool || 'backup pool'}`;
         }
         return 'Backup task';
     }
     if (task.task_type === 'migrate') {
         if (params.source_volume) {
-            return `Migrate ${params.source_volume} from ${params.source_pool || 'unknown'} to ${params.dest_pool || 'unknown'}`;
+            return `${params.source_pool || '?'}/${params.source_volume} → ${params.dest_pool || '?'}`;
         }
         return 'Migration task';
     }
     if (task.task_type === 'restore') {
-        const backupFile = params.backup_file || params.source_volume;
-        return backupFile
-            ? `Restore ${backupFile} to ${params.dest_volume_name || params.dest_volume || 'destination'}`
-            : 'Restore task';
+        const file = params.backup_file || params.source_volume;
+        if (file) {
+            const src = params.backup_pool ? `${params.backup_pool}/` : '';
+            const dstVol = params.dest_volume_name || params.dest_volume || '';
+            const dst = params.dest_pool ? `${params.dest_pool}/${dstVol}` : dstVol || 'destination';
+            return `${src}${file} → ${dst}`;
+        }
+        return 'Restore task';
     }
     return params.source_volume || params.volume_name || params.backup_file || task.current_operation || 'Task';
 }
@@ -761,7 +814,7 @@ function renderTaskHistory() {
     const items = taskHistory.map(task => {
         const targetLabel = getTaskTargetLabel(task);
         return `
-            <div class="task-history-item">
+            <div class="task-history-item" onclick="openTaskDetailModalById('${task.task_id}')" title="Click for details">
                 <div class="task-status ${task.status}">${task.status.toUpperCase()}</div>
                 <div class="progress-text"><strong>${task.task_type || 'Task'}</strong>: ${task.current_operation}</div>
                 <div class="progress-text task-target">${targetLabel}</div>
@@ -769,11 +822,10 @@ function renderTaskHistory() {
                     <div class="progress-fill" style="width: ${task.progress_percent}%"></div>
                 </div>
                 <div class="task-meta">${task.progress_percent}% · ${task.elapsed_seconds}s${task.estimated_remaining_seconds ? ` · ${task.estimated_remaining_seconds}s left` : ''}</div>
-                ${task.error ? `<div class="error-message">${task.error}</div>` : ''}
             </div>
         `;
     }).join('');
-    
+
     progressPanel.innerHTML = items;
 }
 
@@ -836,6 +888,11 @@ async function loadTaskHistory() {
 
 // ============ Helper Functions ============
 
+function poolSizeLabel(pool) {
+    if (pool.pool_type === 'remote') return `remote · ${pool.total_gb.toFixed(1)} GB used`;
+    return `${pool.available_gb.toFixed(1)} GB free`;
+}
+
 function loadPoolsForSelect(selectId) {
     const select = document.getElementById(selectId);
     select.innerHTML = '<option value="">-- Select pool --</option>';
@@ -843,7 +900,7 @@ function loadPoolsForSelect(selectId) {
         if (pool.role !== 'backup') {
             const option = document.createElement('option');
             option.value = pool.name;
-            option.textContent = `${pool.name} (${pool.available_gb.toFixed(1)} GB free)`;
+            option.textContent = `${pool.name} (${poolSizeLabel(pool)})`;
             select.appendChild(option);
         }
     });
@@ -856,7 +913,7 @@ function loadBackupPoolsForSelect(selectId) {
         if (pool.role === 'backup') {
             const option = document.createElement('option');
             option.value = pool.name;
-            option.textContent = `${pool.name} (${pool.available_gb.toFixed(1)} GB free)`;
+            option.textContent = `${pool.name} (${poolSizeLabel(pool)})`;
             select.appendChild(option);
         }
     });
@@ -925,6 +982,245 @@ function closeModal(modalId) {
     document.getElementById(modalId).classList.remove('active');
 }
 
+// ── Conflict Resolution Modal ─────────────────────────────────────────────────
+
+let _conflictCallback = null;
+
+function _showConflictModal(destVolume, destPool, onProceed) {
+    _conflictCallback = onProceed;
+
+    document.getElementById('conflictModalBody').innerHTML = `
+        <p class="conflict-desc">
+            <strong>${escapeHtml(destVolume)}</strong> already exists in <strong>${escapeHtml(destPool)}</strong>.
+            Choose how to proceed:
+        </p>
+        <div class="conflict-options">
+            <div class="conflict-option" data-res="overwrite" onclick="selectConflictOption(this)">
+                <div class="conflict-option-content">
+                    <div class="conflict-option-title">Overwrite target</div>
+                    <div class="conflict-option-desc">Completely replace the existing volume (adds, updates, and deletes files)</div>
+                </div>
+            </div>
+            <div class="conflict-option" data-res="merge" onclick="selectConflictOption(this)">
+                <div class="conflict-option-content">
+                    <div class="conflict-option-title">Merge into target</div>
+                    <div class="conflict-option-desc">Add new files and update existing ones; keep files unique to the destination</div>
+                </div>
+            </div>
+            <div class="conflict-option" data-res="rename" onclick="selectConflictOption(this)">
+                <div class="conflict-option-content">
+                    <div class="conflict-option-title">Rename destination</div>
+                    <div class="conflict-option-desc">Save to a different volume name instead</div>
+                </div>
+                <div class="conflict-rename-wrap" id="conflictRenameWrap">
+                    <input type="text" id="conflictRenameInput" class="conflict-rename-input"
+                        placeholder="New volume name"
+                        oninput="_validateConflictProceed()"
+                        onclick="event.stopPropagation()">
+                </div>
+            </div>
+        </div>
+        <div class="conflict-actions">
+            <button class="btn tonal" onclick="abortConflict()">Abort</button>
+            <button class="btn success" id="conflictProceedBtn" onclick="proceedConflict()" disabled>Proceed</button>
+        </div>
+    `;
+    openModal('conflictModal');
+}
+
+function selectConflictOption(el) {
+    document.querySelectorAll('.conflict-option').forEach(o => o.classList.remove('selected'));
+    el.classList.add('selected');
+    const isRename = el.dataset.res === 'rename';
+    document.getElementById('conflictRenameWrap').classList.toggle('visible', isRename);
+    if (isRename) document.getElementById('conflictRenameInput').focus();
+    _validateConflictProceed();
+}
+
+function _validateConflictProceed() {
+    const selected = document.querySelector('.conflict-option.selected');
+    const btn = document.getElementById('conflictProceedBtn');
+    if (!btn) return;
+    if (!selected) { btn.disabled = true; return; }
+    if (selected.dataset.res === 'rename') {
+        const val = (document.getElementById('conflictRenameInput')?.value || '').trim();
+        btn.disabled = !val;
+    } else {
+        btn.disabled = false;
+    }
+}
+
+function proceedConflict() {
+    const selected = document.querySelector('.conflict-option.selected');
+    if (!selected) return;
+    const resolution = selected.dataset.res;
+    let renameVal = null;
+    if (resolution === 'rename') {
+        renameVal = (document.getElementById('conflictRenameInput')?.value || '').trim();
+        if (!renameVal) { showError('Please enter a new volume name'); return; }
+    }
+    closeModal('conflictModal');
+    if (_conflictCallback) {
+        const cb = _conflictCallback;
+        _conflictCallback = null;
+        cb(resolution, renameVal);
+    }
+}
+
+function abortConflict() {
+    _conflictCallback = null;
+    closeModal('conflictModal');
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+// ── Task Detail Modal ──────────────────────────────────────────────────────────
+
+let _taskDetailPollInterval = null;
+let _taskDetailCurrentId = null;
+
+const PARAM_LABELS = {
+    source_pool:       'Source Pool',
+    source_volume:     'Source Volume',
+    dest_pool:         'Destination Pool',
+    dest_volume:       'Destination Volume',
+    dest_volume_name:  'Dest Volume Name',
+    backup_pool:       'Backup Pool',
+    backup_file:       'Backup File',
+    pool:              'Pool',
+    volume_name:       'Volume',
+    verify:            'Verify',
+    delete_source:     'Delete Source',
+    compress:          'Compress',
+    exclude_patterns:  'Exclude Patterns',
+};
+
+function openTaskDetailModalById(taskId) {
+    const task = taskHistory.find(t => t.task_id === taskId);
+    if (task) openTaskDetailModal(task);
+}
+
+function openTaskDetailModal(task) {
+    _taskDetailCurrentId = task.task_id;
+    document.getElementById('taskDetailTitle').textContent =
+        (task.task_type || 'Task').toUpperCase();
+    document.getElementById('taskDetailBody').innerHTML =
+        '<div class="task-detail-loading">Loading…</div>';
+    openModal('taskDetailModal');
+    _refreshTaskDetail(task.task_id);
+    if (task.status === 'running' || task.status === 'pending') {
+        _taskDetailPollInterval = setInterval(() => _refreshTaskDetail(_taskDetailCurrentId), 2000);
+    }
+}
+
+function closeTaskDetail() {
+    if (_taskDetailPollInterval) {
+        clearInterval(_taskDetailPollInterval);
+        _taskDetailPollInterval = null;
+    }
+    _taskDetailCurrentId = null;
+    closeModal('taskDetailModal');
+}
+
+async function _refreshTaskDetail(taskId) {
+    if (!taskId) return;
+    try {
+        const [progRes, logsRes] = await Promise.all([
+            fetch(`${API_BASE}/task/${taskId}/progress`),
+            fetch(`${API_BASE}/task/${taskId}/logs`),
+        ]);
+        const [prog, logs] = await Promise.all([
+            progRes.ok  ? progRes.json()  : null,
+            logsRes.ok  ? logsRes.json()  : { lines: [] },
+        ]);
+
+        if (prog) {
+            // Keep taskHistory in sync
+            const idx = taskHistory.findIndex(t => t.task_id === taskId);
+            if (idx >= 0) taskHistory[idx] = { ...taskHistory[idx], ...prog };
+            _renderTaskDetail(prog, logs.lines || []);
+
+            if (prog.status === 'completed' || prog.status === 'failed') {
+                if (_taskDetailPollInterval) {
+                    clearInterval(_taskDetailPollInterval);
+                    _taskDetailPollInterval = null;
+                }
+            }
+        }
+    } catch (e) { /* network error — silently skip */ }
+}
+
+function _renderTaskDetail(task, logLines) {
+    if (_taskDetailCurrentId !== task.task_id) return;
+
+    document.getElementById('taskDetailTitle').textContent =
+        (task.task_type || 'Task').toUpperCase();
+
+    const params = task.params || {};
+    const paramRows = Object.entries(params)
+        .filter(([k, v]) => v !== null && v !== undefined && v !== '' && PARAM_LABELS[k])
+        .map(([k, v]) => {
+            const label = PARAM_LABELS[k] || k;
+            const val = typeof v === 'boolean' ? (v ? 'Yes' : 'No') : escapeHtml(String(v));
+            return `<tr><td class="param-key">${label}</td><td class="param-val">${val}</td></tr>`;
+        }).join('');
+
+    const logHtml = logLines.length
+        ? logLines.map(l => `<div class="log-line">${escapeHtml(l)}</div>`).join('')
+        : '<div class="log-empty">No logs captured yet.</div>';
+
+    const startedStr  = task.started_at  ? formatDate(task.started_at)  : '—';
+    const completedStr = task.completed_at ? formatDate(task.completed_at) : '—';
+
+    document.getElementById('taskDetailBody').innerHTML = `
+        <div class="task-detail-header">
+            <span class="task-status ${task.status}">${task.status.toUpperCase()}</span>
+            <span class="task-detail-target">${escapeHtml(getTaskTargetLabel(task))}</span>
+        </div>
+
+        <div class="task-detail-progress">
+            <div class="progress-bar">
+                <div class="progress-fill" style="width: ${task.progress_percent || 0}%"></div>
+            </div>
+            <div class="task-detail-stats">
+                <span>${task.progress_percent || 0}%</span>
+                <span>${task.elapsed_seconds || 0}s elapsed</span>
+                ${task.estimated_remaining_seconds ? `<span>~${task.estimated_remaining_seconds}s left</span>` : ''}
+                <span>Started: ${startedStr}</span>
+                ${task.completed_at ? `<span>Finished: ${completedStr}</span>` : ''}
+            </div>
+        </div>
+
+        ${task.current_operation ? `<div class="task-detail-op">${escapeHtml(task.current_operation)}</div>` : ''}
+        ${task.error ? `<div class="error-message task-detail-error">${escapeHtml(task.error).replace(/\n/g, '<br>')}</div>` : ''}
+
+        ${paramRows ? `
+        <div class="task-detail-section">
+            <div class="task-detail-section-title">Parameters</div>
+            <table class="param-table"><tbody>${paramRows}</tbody></table>
+        </div>` : ''}
+
+        <div class="task-detail-section">
+            <div class="task-detail-section-title">
+                Logs
+                ${(_taskDetailPollInterval) ? '<span class="log-live-badge">● LIVE</span>' : ''}
+            </div>
+            <div class="task-log-terminal" id="taskLogTerminal">${logHtml}</div>
+        </div>
+    `;
+
+    // Auto-scroll log terminal to bottom
+    const term = document.getElementById('taskLogTerminal');
+    if (term) term.scrollTop = term.scrollHeight;
+}
+
 function showError(message) {
     createToast(message, 'error');
 }
@@ -953,7 +1249,13 @@ function createToast(message, type) {
 // Close modals on background click
 document.addEventListener('click', (e) => {
     if (e.target.classList.contains('modal')) {
-        e.target.classList.remove('active');
+        if (e.target.id === 'taskDetailModal') {
+            closeTaskDetail();
+        } else if (e.target.id === 'conflictModal') {
+            abortConflict();
+        } else {
+            e.target.classList.remove('active');
+        }
     }
 });
 
