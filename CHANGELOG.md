@@ -2,6 +2,29 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.0.12
+
+### Added
+
+- **Task type pill** — each task card in the Tasks panel now displays a colored pill badge showing the task type (`Backup`, `Scheduled`, `Migrate`, `Restore`, `Delete`, etc.) for instant visual differentiation; pill also appears in the task detail modal header
+- **Create volume** — "+ New Volume" button on local Docker pool volume lists; creates a new directory with 777 permissions via `POST /api/volume/create`
+- **Rename volume** — "Rename" button per volume in local Docker pools; opens an inline modal to enter a new name, calls the existing `POST /api/rename` endpoint
+- **Backup archive grouping** — backup pool view now parses archive filenames (`{pool}_{volume}_{YYYYMMDD}_{HHMMSS}.tar.gz`) and groups archives by source volume; each group is displayed as a card matching the volume item style, with parsed timestamps and sizes; unparseable filenames fall back to a flat "Other" group
+- **Task start/finish timestamps** — `started_at` and `completed_at` are now included in task API responses and displayed in the task detail panel
+
+### Changed
+
+- **Task list limit raised to 1000** — Tasks panel now holds up to 1000 entries paginated 100 per page with prev/next controls; previously capped at 10
+- **All task parameters shown in detail** — task detail panel now renders every parameter from the task JSON, not just a fixed whitelist; unknown keys are auto-formatted as title case
+- **Elapsed time is now decimal** — running task elapsed time shows sub-second precision (e.g. `0.3s`, `2.1s`) instead of integer seconds
+- **Refresh also refreshes tasks** — clicking the 🔄 refresh button now also reloads the task history list
+- **Pool stats** — local pool cards now show Used + Free space (not just usage %); remote pool cards show only Used space (Free N/A is hidden)
+
+### Fixed
+
+- **"Processing…" stuck on delete tasks** — completed delete tasks no longer show "Processing…" as the operation label; the operation line is now omitted when no current operation is set
+- **"Started: —" in task detail** — task start and completion timestamps were missing from API responses; now correctly populated and formatted as `DD/MM/YYYY HH:MM:SS`
+
 ## 0.0.11
 
 ### Added

@@ -10,12 +10,14 @@ let poolsCache = {};
 let poolsMetadata = {}; // Cache for volume/backup counts
 let activePool = null;
 let taskHistory = []; // Keep track of recent tasks
+let taskPage = 0; // Current task list page (100 per page)
 let consecutiveLoadFailures = 0; // Track network failures
 
 // Configuration
 const POLL_INTERVAL = 2000; // 2 seconds
 const AUTO_REFRESH_INTERVAL = 30000; // 30 seconds
-const MAX_TASK_HISTORY = 10; // Keep last 10 tasks
+const MAX_TASK_HISTORY = 1000; // Keep last 1000 tasks
+const TASKS_PER_PAGE = 100;
 const MAX_LOAD_FAILURES = 3; // Logout after 3 consecutive failures
 
 // ============ Utilities ============
@@ -24,6 +26,12 @@ function formatDate(ts) {
     if (!ts) return 'N/A';
     const d = new Date(ts * 1000);
     return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+}
+
+function formatDateTime(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
 }
 
 // ============ Initialization ============
@@ -148,6 +156,7 @@ async function loadPools() {
             poolsCache[pool.name] = pool;
         });
         displayPools(data.pools);
+        loadTaskHistory();
     } catch (error) {
         consecutiveLoadFailures++;
         console.warn(`Load pools failure ${consecutiveLoadFailures}/${MAX_LOAD_FAILURES}: ${error.message}`);
@@ -186,10 +195,9 @@ function displayPools(pools) {
 
         const isRemote = pool.pool_type === 'remote';
         const statsHtml = isRemote
-            ? `<div class="stat"><div class="stat-label">Used</div><div class="stat-value">${pool.total_gb.toFixed(1)} GB</div></div>
-               <div class="stat"><div class="stat-label">Free</div><div class="stat-value">N/A</div></div>`
-            : `<div class="stat"><div class="stat-label">Free</div><div class="stat-value">${pool.available_gb.toFixed(1)} GB</div></div>
-               <div class="stat"><div class="stat-label">Usage</div><div class="stat-value">${usagePercent.toFixed(0)}%</div></div>`;
+            ? `<div class="stat"><div class="stat-label">Used</div><div class="stat-value">${pool.total_gb.toFixed(1)} GB</div></div>`
+            : `<div class="stat"><div class="stat-label">Used</div><div class="stat-value">${pool.used_gb.toFixed(1)} GB</div></div>
+               <div class="stat"><div class="stat-label">Free</div><div class="stat-value">${pool.available_gb.toFixed(1)} GB</div></div>`;
         const usageBarHtml = isRemote ? '' : `
             <div class="progress-bar" style="margin-top: 8px;">
                 <div class="progress-fill" style="width: ${Math.min(usagePercent, 100)}%"></div>
@@ -260,14 +268,25 @@ async function loadVolumesForPool(poolName) {
 }
 
 function displayVolumes(poolName, volumes, warnings = []) {
-    const poolRole = poolsCache[poolName]?.role || 'docker';
+    const poolMeta = poolsCache[poolName] || {};
+    const poolRole = poolMeta.role || 'docker';
+    const isLocalDocker = poolRole !== 'backup' && poolMeta.pool_type !== 'remote';
     const container = document.getElementById('volumesContainer');
-    
-    let html = `<h2>${poolName}</h2>`;
+
+    // Backup pools get a grouped archive view
+    if (poolRole === 'backup') {
+        displayBackupPool(poolName, volumes, warnings);
+        return;
+    }
+
+    let html = `<div class="volumes-header">
+        <h2>${poolName}</h2>
+        ${isLocalDocker ? `<button class="btn tonal" onclick="openCreateVolumeModal('${poolName}')">+ New Volume</button>` : ''}
+    </div>`;
     if (warnings.length > 0) {
         html += `<div class="warning-banner">${warnings.map(w => `<div>${w}</div>`).join('')}</div>`;
     }
-    
+
     if (volumes.length === 0) {
         html += '<div class="placeholder"><p>No volumes found in this pool</p></div>';
     } else {
@@ -289,16 +308,207 @@ function displayVolumes(poolName, volumes, warnings = []) {
                         </div>
                     </div>
                     <div class="volume-actions">
-                        ${poolRole !== 'backup' ? `<button class="btn vol-btn" onclick="openMigrateModal('${poolName}', '${volume.name}')">Migrate</button>` : ''}
-                        ${poolRole !== 'backup' ? `<button class="btn vol-btn" onclick="openBackupModal('${poolName}', '${volume.name}')">Backup</button>` : `<button class="btn vol-btn" onclick="openRestoreModal('${poolName}', '${volume.name}')">Restore</button>`}
+                        <button class="btn vol-btn" onclick="openMigrateModal('${poolName}', '${volume.name}')">Migrate</button>
+                        <button class="btn vol-btn" onclick="openBackupModal('${poolName}', '${volume.name}')">Backup</button>
+                        ${isLocalDocker ? `<button class="btn tonal vol-btn" onclick="openRenameVolumeModal('${poolName}', '${volume.name}')">Rename</button>` : ''}
                         <button class="btn danger vol-btn" onclick="openDeleteModal('${poolName}', '${volume.name}')">Delete</button>
                     </div>
                 </div>
             `;
         });
     }
-    
+
     container.innerHTML = html;
+}
+
+// ── Backup Pool Grouped View ──────────────────────────────────────────────────
+
+function parseBackupFilename(filename) {
+    const m = filename.match(/^(.+)_(\d{8})_(\d{6})\.tar\.gz$/);
+    if (!m) return null;
+    const prefix = m[1], dateStr = m[2], timeStr = m[3];
+    const dockerPools = Object.keys(poolsCache)
+        .filter(k => poolsCache[k].role === 'docker')
+        .sort((a, b) => b.length - a.length);
+    let pool = null, volume = null;
+    for (const p of dockerPools) {
+        if (prefix === p) { pool = p; volume = ''; break; }
+        if (prefix.startsWith(p + '_')) { pool = p; volume = prefix.slice(p.length + 1); break; }
+    }
+    if (pool === null) {
+        const idx = prefix.indexOf('_');
+        pool = idx === -1 ? prefix : prefix.slice(0, idx);
+        volume = idx === -1 ? '' : prefix.slice(idx + 1);
+    }
+    const ts = new Date(`${dateStr.slice(0,4)}-${dateStr.slice(4,6)}-${dateStr.slice(6,8)}T${timeStr.slice(0,2)}:${timeStr.slice(2,4)}:${timeStr.slice(4,6)}`);
+    return { pool, volume, timestamp: ts, label: volume || pool };
+}
+
+function displayBackupPool(poolName, archives, warnings = []) {
+    const container = document.getElementById('volumesContainer');
+    let html = `<div class="volumes-header"><h2>${poolName}</h2></div>`;
+    if (warnings.length > 0) {
+        html += `<div class="warning-banner">${warnings.map(w => `<div>${w}</div>`).join('')}</div>`;
+    }
+    if (archives.length === 0) {
+        html += '<div class="placeholder"><p>No backups in this pool</p></div>';
+        container.innerHTML = html;
+        return;
+    }
+
+    const groups = {};
+    const unparsed = [];
+    archives.forEach(a => {
+        const parsed = parseBackupFilename(a.name);
+        if (!parsed) { unparsed.push(a); return; }
+        const key = parsed.pool + '/' + (parsed.volume || '');
+        if (!groups[key]) groups[key] = { label: parsed.volume || parsed.pool, pool: parsed.pool, items: [] };
+        groups[key].items.push({ archive: a, parsed });
+    });
+
+    // Sort groups alphabetically by label
+    const sortedGroups = Object.entries(groups).sort(([, a], [, b]) => a.label.localeCompare(b.label));
+
+    sortedGroups.forEach(([, g]) => {
+        g.items.sort((a, b) => b.parsed.timestamp - a.parsed.timestamp);
+        const count = g.items.length;
+        html += `<div class="backup-group">
+            <div class="backup-group-header">${escapeHtml(g.label)} <span>from ${escapeHtml(g.pool)} · ${count} backup${count !== 1 ? 's' : ''}</span></div>
+            <div class="backup-group-items">`;
+        g.items.forEach(({ archive: a, parsed }) => {
+            const size = formatVolumeSize(a.size_bytes, a.size_gb);
+            const dt = `${String(parsed.timestamp.getDate()).padStart(2,'0')}/${String(parsed.timestamp.getMonth()+1).padStart(2,'0')}/${parsed.timestamp.getFullYear()} ${String(parsed.timestamp.getHours()).padStart(2,'0')}:${String(parsed.timestamp.getMinutes()).padStart(2,'0')}`;
+            html += `<div class="backup-item">
+                <div>
+                    <div class="backup-item-name">${escapeHtml(a.name)}</div>
+                    <div class="backup-item-meta">${dt} · ${size}</div>
+                </div>
+                <div style="display:flex;gap:6px;">
+                    <button class="btn vol-btn" onclick="openRestoreModal('${poolName}', '${a.name}')">Restore</button>
+                    <button class="btn danger vol-btn" onclick="openDeleteModal('${poolName}', '${a.name}')">Delete</button>
+                </div>
+            </div>`;
+        });
+        html += `</div></div>`;
+    });
+
+    if (unparsed.length > 0) {
+        html += `<div class="backup-group">
+            <div class="backup-group-header">Other <span>${unparsed.length} file${unparsed.length !== 1 ? 's' : ''}</span></div>
+            <div class="backup-group-items">`;
+        unparsed.forEach(a => {
+            const size = formatVolumeSize(a.size_bytes, a.size_gb);
+            html += `<div class="backup-item">
+                <div>
+                    <div class="backup-item-name">${escapeHtml(a.name)}</div>
+                    <div class="backup-item-meta">${size}</div>
+                </div>
+                <div style="display:flex;gap:6px;">
+                    <button class="btn vol-btn" onclick="openRestoreModal('${poolName}', '${a.name}')">Restore</button>
+                    <button class="btn danger vol-btn" onclick="openDeleteModal('${poolName}', '${a.name}')">Delete</button>
+                </div>
+            </div>`;
+        });
+        html += `</div></div>`;
+    }
+
+    container.innerHTML = html;
+}
+
+// ── Create / Rename Volume ─────────────────────────────────────────────────────
+
+function openCreateVolumeModal(poolName) {
+    const modal = document.getElementById('migrateModal');
+    modal.querySelector('.modal-content').innerHTML = `
+        <div class="modal-header">
+            <h3>New Volume</h3>
+            <button class="close-btn" onclick="closeModal('migrateModal')">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>Pool</label>
+                <input type="text" value="${escapeHtml(poolName)}" disabled>
+            </div>
+            <div class="form-group">
+                <label>Volume Name</label>
+                <input type="text" id="newVolumeName" placeholder="my-volume" autofocus>
+            </div>
+            <button class="btn success" style="width:100%;" onclick="createVolume('${poolName}')">Create</button>
+        </div>`;
+    openModal('migrateModal');
+    document.getElementById('newVolumeName')?.focus();
+}
+
+async function createVolume(poolName) {
+    const name = document.getElementById('newVolumeName')?.value.trim();
+    if (!name) { showError('Volume name is required'); return; }
+    try {
+        const res = await fetch(`${API_BASE}/volume/create`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pool: poolName, volume_name: name }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            closeModal('migrateModal');
+            showSuccess(`Volume '${name}' created`);
+            loadVolumesForPool(poolName);
+        } else {
+            showError(data.detail || 'Failed to create volume');
+        }
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+    }
+}
+
+function openRenameVolumeModal(poolName, volumeName) {
+    const modal = document.getElementById('migrateModal');
+    modal.querySelector('.modal-content').innerHTML = `
+        <div class="modal-header">
+            <h3>Rename Volume</h3>
+            <button class="close-btn" onclick="closeModal('migrateModal')">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>Pool</label>
+                <input type="text" value="${escapeHtml(poolName)}" disabled>
+            </div>
+            <div class="form-group">
+                <label>Current Name</label>
+                <input type="text" value="${escapeHtml(volumeName)}" disabled>
+            </div>
+            <div class="form-group">
+                <label>New Name</label>
+                <input type="text" id="renameVolumeName" value="${escapeHtml(volumeName)}" autofocus>
+            </div>
+            <button class="btn success" style="width:100%;" onclick="renameVolume('${poolName}', '${volumeName}')">Rename</button>
+        </div>`;
+    openModal('migrateModal');
+    const inp = document.getElementById('renameVolumeName');
+    if (inp) { inp.focus(); inp.select(); }
+}
+
+async function renameVolume(poolName, oldName) {
+    const newName = document.getElementById('renameVolumeName')?.value.trim();
+    if (!newName) { showError('New name is required'); return; }
+    if (newName === oldName) { closeModal('migrateModal'); return; }
+    try {
+        const res = await fetch(`${API_BASE}/rename`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pool: poolName, old_name: oldName, new_name: newName }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            closeModal('migrateModal');
+            showSuccess(`Renamed '${oldName}' → '${newName}'`);
+            loadVolumesForPool(poolName);
+        } else {
+            showError(data.detail || 'Failed to rename volume');
+        }
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+    }
 }
 
 function startVolumeSizePolling(poolName, volumes) {
@@ -755,15 +965,17 @@ function addOrUpdateTaskHistory(task) {
     const newEntry = {
         task_id: task.task_id,
         task_type: task.task_type || task.type || 'operation',
-        current_operation: task.current_operation || 'Processing...',
+        current_operation: task.current_operation || null,
         progress_percent: task.progress_percent || 0,
         status: task.status || 'pending',
         elapsed_seconds: task.elapsed_seconds || 0,
         estimated_remaining_seconds: task.estimated_remaining_seconds || null,
         error: task.error || null,
-        params: task.params || {}
+        params: task.params || {},
+        started_at: task.started_at || null,
+        completed_at: task.completed_at || null,
     };
-    
+
     if (index === -1) {
         taskHistory.unshift(newEntry);
     } else {
@@ -814,18 +1026,25 @@ function getTaskTargetLabel(task) {
 
 function renderTaskHistory() {
     const progressPanel = document.getElementById('progressPanel');
-    
+
     if (taskHistory.length === 0) {
         progressPanel.innerHTML = '<div class="placeholder-text">No active tasks</div>';
         return;
     }
-    
-    const items = taskHistory.map(task => {
+
+    const totalPages = Math.ceil(taskHistory.length / TASKS_PER_PAGE);
+    taskPage = Math.max(0, Math.min(taskPage, totalPages - 1));
+    const pageTasks = taskHistory.slice(taskPage * TASKS_PER_PAGE, (taskPage + 1) * TASKS_PER_PAGE);
+
+    const items = pageTasks.map(task => {
         const targetLabel = getTaskTargetLabel(task);
+        const typeClass = (task.task_type || 'operation').replace(/[^a-z0-9_]/gi, '_');
         return `
             <div class="task-history-item" onclick="openTaskDetailModalById('${task.task_id}')" title="Click for details">
-                <div class="task-status ${task.status}">${task.status.toUpperCase()}</div>
-                <div class="progress-text"><strong>${task.task_type || 'Task'}</strong>: ${task.current_operation}</div>
+                <div class="task-card-pills">
+                    <div class="task-type-pill type-${typeClass}">${getTaskTypeDisplay(task.task_type)}</div>
+                    <div class="task-status ${task.status}">${task.status.toUpperCase()}</div>
+                </div>
                 <div class="progress-text task-target">${targetLabel}</div>
                 <div class="progress-bar">
                     <div class="progress-fill" style="width: ${task.progress_percent}%"></div>
@@ -835,7 +1054,32 @@ function renderTaskHistory() {
         `;
     }).join('');
 
-    progressPanel.innerHTML = items;
+    const pagination = totalPages > 1 ? `
+        <div class="task-pagination">
+            <button class="btn tonal task-page-btn" onclick="setTaskPage(${taskPage - 1})" ${taskPage === 0 ? 'disabled' : ''}>‹</button>
+            <span class="task-page-label">${taskPage + 1} / ${totalPages}</span>
+            <button class="btn tonal task-page-btn" onclick="setTaskPage(${taskPage + 1})" ${taskPage >= totalPages - 1 ? 'disabled' : ''}>›</button>
+        </div>` : '';
+
+    progressPanel.innerHTML = items + pagination;
+}
+
+function setTaskPage(page) {
+    taskPage = page;
+    renderTaskHistory();
+}
+
+function getTaskTypeDisplay(type) {
+    const map = {
+        backup: 'Backup',
+        scheduled_backup: 'Scheduled',
+        migrate: 'Migrate',
+        restore: 'Restore',
+        delete: 'Delete',
+        rename: 'Rename',
+        create: 'Create',
+    };
+    return map[type] || (type ? type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Task');
 }
 
 function formatVolumeSize(sizeBytes, fallbackGb = 0) {
@@ -880,13 +1124,15 @@ async function loadTaskHistory() {
         taskHistory = data.tasks.map(task => ({
             task_id: task.task_id,
             task_type: task.task_type || 'operation',
-            current_operation: task.current_operation || 'Processing...',
+            current_operation: task.current_operation || null,
             progress_percent: task.progress_percent || 0,
             status: task.status || 'pending',
             elapsed_seconds: task.elapsed_seconds || 0,
             estimated_remaining_seconds: task.estimated_remaining_seconds || null,
             error: task.error || null,
-            params: task.params || {}
+            params: task.params || {},
+            started_at: task.started_at || null,
+            completed_at: task.completed_at || null,
         }));
         taskHistory = taskHistory.slice(0, MAX_TASK_HISTORY);
         renderTaskHistory();
@@ -1487,10 +1733,14 @@ function _renderTaskDetail(task, logLines) {
 
     const params = task.params || {};
     const paramRows = Object.entries(params)
-        .filter(([k, v]) => v !== null && v !== undefined && v !== '' && PARAM_LABELS[k])
+        .filter(([, v]) => v !== null && v !== undefined && v !== '')
         .map(([k, v]) => {
-            const label = PARAM_LABELS[k] || k;
-            const val = typeof v === 'boolean' ? (v ? 'Yes' : 'No') : escapeHtml(String(v));
+            const label = PARAM_LABELS[k] || k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            let val;
+            if (Array.isArray(v)) val = `<code>${escapeHtml(JSON.stringify(v))}</code>`;
+            else if (typeof v === 'boolean') val = v ? 'Yes' : 'No';
+            else if (typeof v === 'object') val = `<code>${escapeHtml(JSON.stringify(v))}</code>`;
+            else val = escapeHtml(String(v));
             return `<tr><td class="param-key">${label}</td><td class="param-val">${val}</td></tr>`;
         }).join('');
 
@@ -1498,11 +1748,12 @@ function _renderTaskDetail(task, logLines) {
         ? logLines.map(l => `<div class="log-line">${escapeHtml(l)}</div>`).join('')
         : '<div class="log-empty">No logs captured yet.</div>';
 
-    const startedStr  = task.started_at  ? formatDate(task.started_at)  : '—';
-    const completedStr = task.completed_at ? formatDate(task.completed_at) : '—';
+    const startedStr  = formatDateTime(task.started_at);
+    const completedStr = formatDateTime(task.completed_at);
 
     document.getElementById('taskDetailBody').innerHTML = `
         <div class="task-detail-header">
+            <span class="task-type-pill type-${(task.task_type || 'operation').replace(/[^a-z0-9_]/gi, '_')}">${getTaskTypeDisplay(task.task_type)}</span>
             <span class="task-status ${task.status}">${task.status.toUpperCase()}</span>
             <span class="task-detail-target">${escapeHtml(getTaskTargetLabel(task))}</span>
         </div>

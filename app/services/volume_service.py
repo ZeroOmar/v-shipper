@@ -431,6 +431,33 @@ class VolumeService:
             print(f"[ERROR] Failed to rename volume: {e}", flush=True)
             return False
     
+    def create_volume(self, pool_name: str, volume_name: str) -> bool:
+        """Create a new volume directory with 777 permissions (local pools only)."""
+        pool = self.get_pool_by_name(pool_name)
+        if not pool:
+            return False
+        if self._is_remote_pool(pool):
+            print(f"[ERROR] Cannot create volume in remote pool '{pool_name}'", flush=True)
+            return False
+
+        pool_resolved = Path(pool["path"]).resolve()
+        new_path = (pool_resolved / volume_name).resolve()
+
+        if not new_path.is_relative_to(pool_resolved):
+            print(f"[ERROR] Path traversal attempt in create_volume: {volume_name}", flush=True)
+            return False
+
+        try:
+            if new_path.exists():
+                print(f"[ERROR] Volume '{volume_name}' already exists in '{pool_name}'", flush=True)
+                return False
+            new_path.mkdir(mode=0o777, parents=False, exist_ok=False)
+            print(f"[INFO] Created volume '{volume_name}' in '{pool_name}'", flush=True)
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to create volume '{volume_name}': {e}", flush=True)
+            return False
+
     def delete_volume(self, pool_name: str, volume_name: str) -> bool:
         """Delete a volume or backup file."""
         pool = self.get_pool_by_name(pool_name)

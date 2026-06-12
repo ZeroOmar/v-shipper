@@ -101,7 +101,7 @@ class TaskQueue:
             
             # Update elapsed time
             if task.get("started_at"):
-                task["elapsed_seconds"] = int(time.time() - task["started_at"])
+                task["elapsed_seconds"] = round(time.time() - task["started_at"], 1)
             self._save_tasks()
     
     def start_task(self, task_id: str):

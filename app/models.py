@@ -106,10 +106,12 @@ class TaskProgressResponse(BaseModel):
     task_type: Optional[str] = None
     progress_percent: int
     current_operation: Optional[str] = None
-    elapsed_seconds: int = 0
+    elapsed_seconds: float = 0
     estimated_remaining_seconds: Optional[int] = None
     error: Optional[str] = None
     params: Dict[str, Any] = Field(default_factory=dict)
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
 
 
 class TasksListResponse(BaseModel):
@@ -178,10 +180,16 @@ class PoolCreateRequest(BaseModel):
     path: str
 
 
+class VolumeCreateRequest(BaseModel):
+    """Create new volume (directory) request."""
+    pool: str
+    volume_name: str
+
+
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str = "ok"
-    version: str = "0.0.11"
+    version: str = "0.0.12"
 
 
 # ── Backup Schedule Models ────────────────────────────────────────────────────

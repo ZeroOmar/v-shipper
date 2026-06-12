@@ -10,7 +10,7 @@ from app.models import (
     LoginRequest, PoolsListResponse, VolumesListResponse, VolumeDetailResponse,
     MigrateRequest, BackupRequest, RenameRequest, DeleteRequest, RestoreRequest, PoolCreateRequest,
     TaskResponse, TaskProgressResponse, TasksListResponse, HealthResponse, PoolStats, VolumeInfo,
-    BackupSchedule, BackupScheduleCreate, SchedulesResponse,
+    BackupSchedule, BackupScheduleCreate, SchedulesResponse, VolumeCreateRequest,
 )
 from app.services.volume_service import get_volume_service
 from app.services.migration_service import get_migration_service
@@ -291,6 +291,23 @@ async def backup_volume(request: BackupRequest, session: dict = Depends(require_
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/api/volume/create")
+async def create_volume(request: VolumeCreateRequest, session: dict = Depends(require_auth)):
+    """Create a new volume directory in a local pool."""
+    try:
+        config = get_config()
+        volume_service = get_volume_service(config)
+        success = volume_service.create_volume(request.pool, request.volume_name)
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to create volume — it may already exist or the pool is remote")
+        return {"status": "created"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Volume create error: {e}", flush=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/api/rename")
 async def rename_volume(request: RenameRequest, session: dict = Depends(require_auth)):
     """Rename a volume."""
@@ -455,7 +472,9 @@ async def list_tasks(session: dict = Depends(require_auth)):
                 elapsed_seconds=item.get("elapsed_seconds", 0),
                 estimated_remaining_seconds=item.get("estimated_remaining_seconds"),
                 error=item.get("error"),
-                params=item.get("params", {})
+                params=item.get("params", {}),
+                started_at=item.get("started_at"),
+                completed_at=item.get("completed_at"),
             )
             for item in sorted_tasks
         ]
@@ -526,7 +545,9 @@ async def get_task_progress(task_id: str, session: dict = Depends(require_auth))
             elapsed_seconds=task.get("elapsed_seconds", 0),
             estimated_remaining_seconds=task.get("estimated_remaining_seconds"),
             error=task.get("error"),
-            params=task.get("params", {})
+            params=task.get("params", {}),
+            started_at=task.get("started_at"),
+            completed_at=task.get("completed_at"),
         )
     
     except HTTPException:
