@@ -507,7 +507,8 @@ async function startBackup(sourcePool, sourceVolume) {
 function openRestoreModal(backupPool, backupFile) {
     const modal = document.getElementById('backupModal');
     const content = modal.querySelector('.modal-content');
-    const defaultVolume = backupFile.replace(/\.tar\.gz$/, '').replace(/_\d{8}_\d{6}$/, '');
+    const _stripped = backupFile.replace(/\.tar\.gz$/, '').replace(/_\d{8}_\d{6}$/, '');
+    const defaultVolume = _stripped.includes('_') ? _stripped.slice(_stripped.indexOf('_') + 1) : _stripped;
 
     content.innerHTML = `
         <div class="modal-header">

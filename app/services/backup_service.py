@@ -68,7 +68,7 @@ class BackupService:
                 source_path = f"{source_pool['path']}/{source_volume_name}"
 
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            archive_name = f"{source_volume_name}_{timestamp}.tar.gz"
+            archive_name = f"{source_pool_name}_{source_volume_name}_{timestamp}.tar.gz"
             
             # For remote backup pools, create archive in staging directory first
             if backup_pool.get('pool_type') == 'remote':
