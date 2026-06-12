@@ -40,8 +40,9 @@ backup_pools:
     remote_host: 10.0.0.5:873
     rsync_module: docker-backup
 
-tmp_dir: /tmp               # base dir for locks, task state, and staging (default: /tmp)
+tmp_dir: /tmp               # base dir for locks and staging (default: /tmp)
 staging_dir: /tmp/staging   # override staging path (default: {tmp_dir}/staging)
+config_dir: /config         # persistent config dir for task/schedule state (default: /config)
 
 web_ui:
   port: 8000
@@ -129,7 +130,18 @@ All endpoints require authentication (session cookie set at login).
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/task/<id>/progress` | Poll task progress |
+| GET | `/api/task/<id>/logs` | Captured log lines for a task |
 | GET | `/api/tasks` | Task history |
+
+### Backup schedules
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/schedules` | List all backup schedule jobs |
+| POST | `/api/schedules` | Create a new schedule job |
+| PUT | `/api/schedules/{id}` | Update a schedule job |
+| DELETE | `/api/schedules/{id}` | Delete a schedule job |
+| POST | `/api/schedules/{id}/toggle` | Enable or disable a schedule job |
+| POST | `/api/schedules/{id}/run` | Trigger a schedule job immediately |
 
 ### Utility
 | Method | Path | Description |
@@ -173,6 +185,7 @@ v-shipper/
 │       ├── volume_service.py    # Volume discovery, stats, rename/delete
 │       ├── migration_service.py # rsync orchestration, lockfiles
 │       ├── backup_service.py    # tar archiving, remote restore staging
+│       ├── scheduler_service.py # APScheduler-backed cron backup jobs
 │       ├── docker_service.py    # Docker SDK wrapper (minimal use)
 │       └── task_queue.py        # Sequential queue, progress, crash recovery
 ├── app/templates/index.html     # SPA shell
@@ -222,4 +235,3 @@ git push origin v0.0.7
 - One operation at a time (sequential task queue by design)
 - Single admin account (no RBAC)
 - In-memory session store (cleared on restart)
-- No backup rotation or scheduling

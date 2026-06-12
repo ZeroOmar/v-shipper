@@ -12,6 +12,7 @@ from app.services.task_queue import get_task_queue
 from app.services.volume_service import get_volume_service
 from app.services.migration_service import get_migration_service
 from app.services.backup_service import get_backup_service
+from app.services.scheduler_service import get_scheduler_service
 from app.api.routes import router
 
 # Load configuration
@@ -22,14 +23,16 @@ except Exception as e:
     print(f"[FATAL] Failed to load configuration: {e}", flush=True)
     raise
 
-# Initialize task queue first so tmp_dir is set before any service touches it
-get_task_queue(tmp_dir=config.tmp_dir)
+# Initialize task queue first so dirs are set before any service touches them
+get_task_queue(tmp_dir=config.tmp_dir, config_dir=config.config_dir)
 print(f"[APP] Using tmp_dir: {config.tmp_dir}", flush=True)
+print(f"[APP] Using config_dir: {config.config_dir}", flush=True)
 
 # Initialize services
 get_volume_service(config)
 get_migration_service(config, get_volume_service(config))
 get_backup_service(config, get_volume_service(config))
+get_scheduler_service(config, get_backup_service(config, get_volume_service(config)), get_task_queue())
 
 
 @asynccontextmanager
@@ -38,6 +41,7 @@ async def lifespan(app: FastAPI):
     print(f"[APP] v-shipper started successfully", flush=True)
     print(f"[APP] Listening on port {config.web_ui.port}", flush=True)
     yield
+    get_scheduler_service().shutdown()
     print(f"[APP] v-shipper shutting down", flush=True)
 
 

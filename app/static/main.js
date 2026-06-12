@@ -775,6 +775,12 @@ function addOrUpdateTaskHistory(task) {
 
 function getTaskTargetLabel(task) {
     const params = task.params || {};
+    if (task.task_type === 'scheduled_backup') {
+        const name = params.job_name || 'Scheduled Backup';
+        const count = params.total_volumes || 0;
+        const pool = params.backup_pool || '';
+        return `${name} — ${count} volume${count !== 1 ? 's' : ''}${pool ? ` → ${pool}` : ''}`;
+    }
     if (task.task_type === 'delete') {
         const pool = params.pool || '';
         const vol = params.volume_name || params.source_volume || params.volume || '';
@@ -1038,6 +1044,15 @@ function showSettingsSection(name) {
             const el = document.getElementById('aboutVersion');
             if (el) el.textContent = d.version || '–';
         }).catch(() => {});
+    } else if (name === 'schedules') {
+        content.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                <h2 class="settings-section-title" style="margin:0;">Backup Schedules</h2>
+                <button class="btn" onclick="openScheduleForm()">+ New Schedule</button>
+            </div>
+            <p class="settings-section-desc">Automated recurring backups with retention policies.</p>
+            <div id="scheduleList" class="schedule-list"><div class="placeholder-text">Loading…</div></div>`;
+        loadSchedules();
     }
 }
 
@@ -1050,6 +1065,243 @@ function selectTheme(theme) {
         applyTheme(theme);
     }
     showSettingsSection('appearance');
+}
+
+// ── Backup Schedules ──────────────────────────────────────────────────────────
+
+async function loadSchedules() {
+    const list = document.getElementById('scheduleList');
+    if (!list) return;
+    try {
+        const res = await fetch(`${API_BASE}/schedules`, { headers: { 'Authorization': `Bearer ${sessionId}` } });
+        const data = await res.json();
+        if (res.ok) {
+            renderScheduleList(data.schedules || []);
+        } else {
+            list.innerHTML = `<div class="placeholder-text">Failed to load schedules</div>`;
+        }
+    } catch (e) {
+        if (list) list.innerHTML = `<div class="placeholder-text">Error: ${escapeHtml(e.message)}</div>`;
+    }
+}
+
+function renderScheduleList(schedules) {
+    const list = document.getElementById('scheduleList');
+    if (!list) return;
+    if (!schedules.length) {
+        list.innerHTML = `<div class="placeholder-text">No schedules yet. Click "+ New Schedule" to create one.</div>`;
+        return;
+    }
+    list.innerHTML = schedules.map(job => {
+        const nextRun = job.next_run ? new Date(job.next_run * 1000).toLocaleString() : 'N/A';
+        const volCount = (job.volumes || []).length;
+        const enabledClass = job.enabled ? 'on' : 'off';
+        const enabledLabel = job.enabled ? 'Enabled' : 'Disabled';
+        return `
+        <div class="schedule-row">
+            <div class="schedule-row-main">
+                <div class="schedule-row-name">${escapeHtml(job.name)}</div>
+                <div class="schedule-row-meta">
+                    <code>${escapeHtml(job.cron)}</code> &nbsp;·&nbsp;
+                    Pool: <strong>${escapeHtml(job.backup_pool)}</strong> &nbsp;·&nbsp;
+                    ${volCount} volume${volCount !== 1 ? 's' : ''} &nbsp;·&nbsp;
+                    Keep ${job.retention} backup${job.retention !== 1 ? 's' : ''}
+                </div>
+                <div class="schedule-next-run">Next run: ${nextRun}</div>
+            </div>
+            <div class="schedule-row-actions">
+                <span class="schedule-enabled-chip ${enabledClass}" onclick="toggleSchedule('${job.id}')">${enabledLabel}</span>
+                <button class="btn tonal" onclick="runScheduleNow('${job.id}')">▶ Run</button>
+                <button class="btn tonal" onclick="openScheduleForm('${job.id}')">Edit</button>
+                <button class="btn danger" onclick="deleteSchedule('${job.id}')">Delete</button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+async function openScheduleForm(jobId = null) {
+    const content = document.getElementById('settingsContent');
+    content.innerHTML = `<div class="placeholder-text">Loading…</div>`;
+
+    let job = null;
+    if (jobId) {
+        try {
+            const res = await fetch(`${API_BASE}/schedules`, { headers: { 'Authorization': `Bearer ${sessionId}` } });
+            const data = await res.json();
+            job = (data.schedules || []).find(j => j.id === jobId) || null;
+        } catch (e) { /* ignore */ }
+    }
+
+    // Fetch all pools to populate backup pool dropdown and volume checkboxes
+    let pools = [];
+    let dockerPools = [];
+    let volumesByPool = {};
+    try {
+        const res = await fetch(`${API_BASE}/pools`, { headers: { 'Authorization': `Bearer ${sessionId}` } });
+        const data = await res.json();
+        pools = data.pools || [];
+        dockerPools = pools.filter(p => p.role === 'docker');
+        // fetch volumes for each docker pool in parallel
+        await Promise.all(dockerPools.map(async p => {
+            try {
+                const vRes = await fetch(`${API_BASE}/volumes?pool=${encodeURIComponent(p.name)}`, { headers: { 'Authorization': `Bearer ${sessionId}` } });
+                const vData = await vRes.json();
+                volumesByPool[p.name] = (vData.volumes || []).map(v => v.name);
+            } catch (e) { volumesByPool[p.name] = []; }
+        }));
+    } catch (e) { /* ignore */ }
+
+    const backupPools = pools.filter(p => p.role === 'backup');
+    const selectedVols = new Set((job?.volumes || []).map(v => `${v.pool}::${v.volume}`));
+
+    const cronExamples = [
+        { label: 'Daily 2am', value: '0 2 * * *' },
+        { label: 'Every 6h', value: '0 */6 * * *' },
+        { label: 'Weekly Sun', value: '0 2 * * 0' },
+        { label: 'Monthly 1st', value: '0 2 1 * *' },
+    ];
+
+    const volumeGroupsHtml = dockerPools.map(p => {
+        const vols = volumesByPool[p.name] || [];
+        if (!vols.length) return '';
+        return `<div>
+            <div class="schedule-pool-group-title">${escapeHtml(p.name)}</div>
+            ${vols.map(v => {
+                const key = `${p.name}::${v}`;
+                const checked = selectedVols.has(key) ? 'checked' : '';
+                return `<label class="schedule-vol-item">
+                    <input type="checkbox" data-pool="${escapeHtml(p.name)}" data-vol="${escapeHtml(v)}" ${checked}>
+                    ${escapeHtml(v)}
+                </label>`;
+            }).join('')}
+        </div>`;
+    }).join('');
+
+    content.innerHTML = `
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
+            <button class="btn tonal" onclick="showSettingsSection('schedules')">← Back</button>
+            <h2 class="settings-section-title" style="margin:0;">${jobId ? 'Edit Schedule' : 'New Schedule'}</h2>
+        </div>
+        <div class="schedule-form">
+            <label>Name
+                <input type="text" id="sfName" value="${escapeHtml(job?.name || '')}" placeholder="e.g. Nightly Production Backup">
+            </label>
+            <label>Cron Expression
+                <input type="text" id="sfCron" value="${escapeHtml(job?.cron || '0 2 * * *')}" placeholder="0 2 * * *">
+                <div class="cron-examples">
+                    ${cronExamples.map(e => `<span class="cron-chip" onclick="document.getElementById('sfCron').value='${e.value}'">${e.label} <code>${e.value}</code></span>`).join('')}
+                </div>
+            </label>
+            <label>Backup Pool
+                <select id="sfBackupPool">
+                    ${backupPools.map(p => `<option value="${escapeHtml(p.name)}" ${job?.backup_pool === p.name ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
+                    ${!backupPools.length ? '<option value="" disabled>No backup pools configured</option>' : ''}
+                </select>
+            </label>
+            <label>Retention (backups to keep per volume)
+                <input type="number" id="sfRetention" value="${job?.retention ?? 7}" min="1" max="365">
+            </label>
+            <label>Volumes to Back Up
+                <div class="schedule-volume-groups" id="sfVolumeGroups">
+                    ${volumeGroupsHtml || '<div class="placeholder-text">No volumes available</div>'}
+                </div>
+            </label>
+            <div class="schedule-form-actions">
+                <button class="btn success" onclick="saveSchedule(${jobId ? `'${jobId}'` : 'null'})">Save</button>
+                <button class="btn tonal" onclick="showSettingsSection('schedules')">Cancel</button>
+            </div>
+        </div>`;
+}
+
+async function saveSchedule(jobId) {
+    const name = document.getElementById('sfName')?.value.trim();
+    const cron = document.getElementById('sfCron')?.value.trim();
+    const backupPool = document.getElementById('sfBackupPool')?.value;
+    const retention = parseInt(document.getElementById('sfRetention')?.value, 10) || 7;
+
+    if (!name) { showError('Schedule name is required'); return; }
+    if (!cron) { showError('Cron expression is required'); return; }
+    if (!backupPool) { showError('Backup pool is required'); return; }
+
+    const volumes = [];
+    document.querySelectorAll('#sfVolumeGroups input[type="checkbox"]:checked').forEach(cb => {
+        volumes.push({ pool: cb.dataset.pool, volume: cb.dataset.vol });
+    });
+    if (!volumes.length) { showError('Select at least one volume'); return; }
+
+    const body = { name, cron, backup_pool: backupPool, volumes, retention };
+    const url = jobId ? `${API_BASE}/schedules/${jobId}` : `${API_BASE}/schedules`;
+    const method = jobId ? 'PUT' : 'POST';
+
+    try {
+        const res = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionId}` },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showSuccess(jobId ? 'Schedule updated' : 'Schedule created');
+            showSettingsSection('schedules');
+        } else {
+            showError(data.detail || 'Failed to save schedule');
+        }
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+    }
+}
+
+async function deleteSchedule(jobId) {
+    if (!confirm('Delete this backup schedule? This cannot be undone.')) return;
+    try {
+        const res = await fetch(`${API_BASE}/schedules/${jobId}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${sessionId}` },
+        });
+        if (res.ok) {
+            showSuccess('Schedule deleted');
+            loadSchedules();
+        } else {
+            const data = await res.json();
+            showError(data.detail || 'Failed to delete schedule');
+        }
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+    }
+}
+
+async function toggleSchedule(jobId) {
+    try {
+        const res = await fetch(`${API_BASE}/schedules/${jobId}/toggle`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${sessionId}` },
+        });
+        if (res.ok) {
+            loadSchedules();
+        } else {
+            const data = await res.json();
+            showError(data.detail || 'Failed to toggle schedule');
+        }
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+    }
+}
+
+async function runScheduleNow(jobId) {
+    try {
+        const res = await fetch(`${API_BASE}/schedules/${jobId}/run`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${sessionId}` },
+        });
+        if (res.ok) {
+            showSuccess('Backup job triggered — check the Tasks panel');
+        } else {
+            const data = await res.json();
+            showError(data.detail || 'Failed to trigger schedule');
+        }
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+    }
 }
 
 // ── Conflict Resolution Modal ─────────────────────────────────────────────────

@@ -26,6 +26,7 @@ backup_pools:
     remote_host: 10.0.13.21:30026
 
 tmp_dir: /Users/zero/Files/Repos/_temp/tmp
+config_dir: /Users/zero/Files/Repos/_temp/config
 
 web_ui:
   port: 8000

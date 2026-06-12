@@ -9,12 +9,14 @@ from fastapi.responses import JSONResponse
 from app.models import (
     LoginRequest, PoolsListResponse, VolumesListResponse, VolumeDetailResponse,
     MigrateRequest, BackupRequest, RenameRequest, DeleteRequest, RestoreRequest, PoolCreateRequest,
-    TaskResponse, TaskProgressResponse, TasksListResponse, HealthResponse, PoolStats, VolumeInfo
+    TaskResponse, TaskProgressResponse, TasksListResponse, HealthResponse, PoolStats, VolumeInfo,
+    BackupSchedule, BackupScheduleCreate, SchedulesResponse,
 )
 from app.services.volume_service import get_volume_service
 from app.services.migration_service import get_migration_service
 from app.services.backup_service import get_backup_service
 from app.services.task_queue import get_task_queue
+from app.services.scheduler_service import get_scheduler_service
 from app.config import validate_auth, get_config
 
 router = APIRouter()
@@ -544,3 +546,94 @@ async def get_task_logs(task_id: str, session: dict = Depends(require_auth)):
         "task_id": task_id,
         "lines": task_queue.get_task_logs(task_id)
     }
+
+
+# ── Backup Schedule Endpoints ─────────────────────────────────────────────────
+
+def _job_to_model(job: dict) -> BackupSchedule:
+    return BackupSchedule(
+        id=job['id'],
+        name=job['name'],
+        cron=job['cron'],
+        backup_pool=job['backup_pool'],
+        volumes=job.get('volumes', []),
+        retention=job.get('retention', 7),
+        enabled=job.get('enabled', True),
+        next_run=job.get('next_run'),
+    )
+
+
+@router.get("/api/schedules", response_model=SchedulesResponse)
+async def list_schedules(session: dict = Depends(require_auth)):
+    """List all backup schedule jobs."""
+    svc = get_scheduler_service()
+    return SchedulesResponse(schedules=[_job_to_model(j) for j in svc.list_jobs()])
+
+
+@router.post("/api/schedules", response_model=BackupSchedule)
+async def create_schedule(body: BackupScheduleCreate, session: dict = Depends(require_auth)):
+    """Create a new backup schedule job."""
+    from apscheduler.triggers.cron import CronTrigger
+    try:
+        CronTrigger.from_crontab(body.cron, timezone='UTC')
+    except Exception:
+        raise HTTPException(status_code=422, detail=f"Invalid cron expression: {body.cron!r}")
+    svc = get_scheduler_service()
+    job = svc.create_job({
+        'name': body.name,
+        'cron': body.cron,
+        'backup_pool': body.backup_pool,
+        'volumes': [v.model_dump() for v in body.volumes],
+        'retention': body.retention,
+    })
+    return _job_to_model(job)
+
+
+@router.put("/api/schedules/{job_id}", response_model=BackupSchedule)
+async def update_schedule(job_id: str, body: BackupScheduleCreate, session: dict = Depends(require_auth)):
+    """Update an existing backup schedule job."""
+    from apscheduler.triggers.cron import CronTrigger
+    try:
+        CronTrigger.from_crontab(body.cron, timezone='UTC')
+    except Exception:
+        raise HTTPException(status_code=422, detail=f"Invalid cron expression: {body.cron!r}")
+    svc = get_scheduler_service()
+    job = svc.update_job(job_id, {
+        'name': body.name,
+        'cron': body.cron,
+        'backup_pool': body.backup_pool,
+        'volumes': [v.model_dump() for v in body.volumes],
+        'retention': body.retention,
+    })
+    if job is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return _job_to_model(job)
+
+
+@router.delete("/api/schedules/{job_id}")
+async def delete_schedule(job_id: str, session: dict = Depends(require_auth)):
+    """Delete a backup schedule job."""
+    svc = get_scheduler_service()
+    if not svc.delete_job(job_id):
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return {"status": "deleted"}
+
+
+@router.post("/api/schedules/{job_id}/toggle", response_model=BackupSchedule)
+async def toggle_schedule(job_id: str, session: dict = Depends(require_auth)):
+    """Enable or disable a backup schedule job."""
+    svc = get_scheduler_service()
+    job = svc.toggle_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return _job_to_model(job)
+
+
+@router.post("/api/schedules/{job_id}/run")
+async def run_schedule_now(job_id: str, session: dict = Depends(require_auth)):
+    """Trigger a backup schedule job immediately."""
+    svc = get_scheduler_service()
+    if job_id not in svc.jobs:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    svc.trigger_now(job_id)
+    return {"status": "triggered"}

@@ -2,6 +2,19 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.0.11
+
+### Added
+
+- **Backup scheduling** — new APScheduler-backed cron job system (`scheduler_service.py`); Settings → Schedules section lets you create jobs that define which volumes to back up, which backup pool to use, a cron expression, and a retention count; jobs run sequentially per volume, skip locked volumes, and produce a summary task plus individual sub-tasks visible in the Tasks panel
+- **`config_dir` config option** — new YAML key (`default: /config`) that stores persistent config files (`config.yaml`, `vshipper_tasks.json`, `vshipper_schedules.json`) separately from ephemeral tmp data; locks and staging remain in `tmp_dir`
+- **Remote pool retention** — backup retention now works for remote rsync daemon pools: archives are listed via `rsync --list-only` and each archive to delete is removed using the rsync filter+delete trick (sync empty dir with file-specific include/exclude and `--delete`) so only targeted archives are removed
+- **Schedule REST API** — 6 new endpoints: `GET /api/schedules`, `POST /api/schedules`, `PUT /api/schedules/{id}`, `DELETE /api/schedules/{id}`, `POST /api/schedules/{id}/toggle`, `POST /api/schedules/{id}/run`
+
+### Changed
+
+- **Task and schedule state moved to `config_dir`** — `vshipper_tasks.json` and `vshipper_schedules.json` are now stored in the config directory instead of `tmp_dir`; recommended to mount a persistent volume at `config_dir` to survive container restarts
+
 ## 0.0.10
 
 ### Added

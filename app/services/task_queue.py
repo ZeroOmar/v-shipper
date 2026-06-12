@@ -46,7 +46,7 @@ class _TaskLogCapture:
 class TaskQueue:
     """Sequential task queue with progress tracking and locking."""
 
-    def __init__(self, tmp_dir: str = "/tmp"):
+    def __init__(self, tmp_dir: str = "/tmp", config_dir: str = "/config"):
         self.tasks: Dict[str, Dict[str, Any]] = {}
         self.lock = Lock()
         self.log_lock = Lock()
@@ -54,7 +54,8 @@ class TaskQueue:
         self.running_task_id: Optional[str] = None
         self.locks_dir = Path(tmp_dir) / "locks"
         self.locks_dir.mkdir(exist_ok=True, parents=True)
-        self.tasks_file = Path(tmp_dir) / "vshipper_tasks.json"
+        Path(config_dir).mkdir(parents=True, exist_ok=True)
+        self.tasks_file = Path(config_dir) / "vshipper_tasks.json"
         self._load_tasks()
     
     def add_task(self, task_type: str, **kwargs) -> str:
@@ -201,11 +202,11 @@ class TaskQueue:
 _task_queue: Optional[TaskQueue] = None
 
 
-def get_task_queue(tmp_dir: str = "/tmp") -> TaskQueue:
-    """Get (or initialize) the global task queue. Pass tmp_dir only on the first call."""
+def get_task_queue(tmp_dir: str = "/tmp", config_dir: str = "/config") -> TaskQueue:
+    """Get (or initialize) the global task queue. Pass dirs only on the first call."""
     global _task_queue
     if _task_queue is None:
-        _task_queue = TaskQueue(tmp_dir=tmp_dir)
+        _task_queue = TaskQueue(tmp_dir=tmp_dir, config_dir=config_dir)
         # Install stdout interceptor once so all [TASK:id] print()s flow into the log buffer
         if not isinstance(sys.stdout, _TaskLogCapture):
             sys.stdout = _TaskLogCapture(sys.stdout, _task_queue)

@@ -37,6 +37,7 @@ class AppConfig(BaseModel):
     web_ui: WebUIConfig
     tmp_dir: str = "/tmp"
     staging_dir: str = "/tmp/staging"
+    config_dir: str = "/config"
     
     @field_validator('docker_hosts', 'backup_pools', mode='before')
     @classmethod
@@ -180,4 +181,38 @@ class PoolCreateRequest(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str = "ok"
-    version: str = "0.0.10"
+    version: str = "0.0.11"
+
+
+# ── Backup Schedule Models ────────────────────────────────────────────────────
+
+class ScheduleVolume(BaseModel):
+    """A volume entry in a backup schedule."""
+    pool: str
+    volume: str
+
+
+class BackupSchedule(BaseModel):
+    """A persisted backup schedule job."""
+    id: str
+    name: str
+    cron: str
+    backup_pool: str
+    volumes: List[ScheduleVolume]
+    retention: int = 7
+    enabled: bool = True
+    next_run: Optional[float] = None  # UTC unix timestamp
+
+
+class BackupScheduleCreate(BaseModel):
+    """Request body for creating or updating a backup schedule."""
+    name: str
+    cron: str
+    backup_pool: str
+    volumes: List[ScheduleVolume]
+    retention: int = 7
+
+
+class SchedulesResponse(BaseModel):
+    """List of backup schedules."""
+    schedules: List[BackupSchedule]

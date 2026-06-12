@@ -61,16 +61,19 @@ class ConfigManager:
             )
             
             tmp_dir = config_dict.get("tmp_dir", "/tmp")
+            config_dir = config_dict.get("config_dir", "/config")
             self.config = AppConfig(
                 docker_hosts=docker_hosts,
                 backup_pools=backup_pools,
                 web_ui=web_ui,
                 tmp_dir=tmp_dir,
-                staging_dir=config_dict.get("staging_dir", f"{tmp_dir}/staging")
+                staging_dir=config_dict.get("staging_dir", f"{tmp_dir}/staging"),
+                config_dir=config_dir,
             )
-            self.config_file_path = Path(tmp_dir) / "config.yaml"
-            
-            # Save to /tmp/config.yaml for reference
+            Path(config_dir).mkdir(parents=True, exist_ok=True)
+            self.config_file_path = Path(config_dir) / "config.yaml"
+
+            # Save parsed config to config_dir for reference
             self._save_config_to_file()
             
             print(f"[CONFIG] Loaded configuration: {len(docker_hosts)} docker hosts, "

@@ -30,6 +30,7 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 | `app/services/migration_service.py` | rsync orchestration, lockfiles |
 | `app/services/backup_service.py` | tar archiving, remote restore via staging |
 | `app/services/task_queue.py` | Sequential queue, progress tracking, crash recovery, per-task log capture |
+| `app/services/scheduler_service.py` | APScheduler cron backup jobs, retention (local + remote), singleton |
 | `app/templates/index.html` | SPA shell |
 | `app/static/main.js` | All client logic — polling, modals, progress |
 | `app/static/style.css` | Styling |
@@ -38,9 +39,10 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 ## Architecture patterns
 
 - **Sequential ops only** — one migration/backup at a time; tasks queue in memory
-- **Lockfiles** at `/tmp/locks/<pool>_<volume>.lock` — cooperative exclusive locks, always wrap in try/finally
+- **Lockfiles** at `{tmp_dir}/locks/<pool>_<volume>.lock` — cooperative exclusive locks, always wrap in try/finally
 - **Progress** stored in-memory, polled by frontend every 2s via `GET /api/task/<id>/progress`
-- **Task persistence** to `/tmp/vshipper_tasks.json` — incomplete tasks → marked failed on restart
+- **Task persistence** to `{config_dir}/vshipper_tasks.json` — incomplete tasks → marked failed on restart
+- **Scheduler** in `scheduler_service.py` — APScheduler `BackgroundScheduler`, jobs persisted to `{config_dir}/vshipper_schedules.json`
 - **Remote pools** are rsync daemon targets (not SSH, not mounted FS); local pools are direct paths
 - **Log to stdout** with `print(..., flush=True)` — prefix `[TASK:id]` for task logs; a stdout interceptor in `task_queue.py` captures these into an in-memory per-task buffer, retrievable via `GET /api/task/<id>/logs`
 
@@ -67,8 +69,9 @@ backup_pools:
     pool: /path/to/backups
     pool_type: local
 
-tmp_dir: /tmp                 # base dir for locks, task state, and staging (default: /tmp)
+tmp_dir: /tmp                 # base dir for locks and staging (default: /tmp)
 staging_dir: /tmp/staging     # override staging path; defaults to {tmp_dir}/staging
+config_dir: /config           # persistent dir for config.yaml, tasks, schedules (default: /config)
 
 web_ui:
   port: 8000
