@@ -104,6 +104,7 @@ function showDashboard() {
     loadTaskHistory();
     loadPools();
     startAutoRefresh();
+    switchMobileTab('pools');
 }
 
 function startAutoRefresh() {
@@ -215,6 +216,7 @@ function selectPool(poolName) {
     activePool = poolName;
     displayPools(Object.values(poolsCache));
     loadVolumesForPool(poolName);
+    if (window.innerWidth <= 768) switchMobileTab('volumes');
 }
 
 async function loadVolumesForPool(poolName) {
@@ -983,6 +985,73 @@ function closeModal(modalId) {
     document.getElementById(modalId).classList.remove('active');
 }
 
+// ── Settings Overlay ──────────────────────────────────────────────────────────
+
+function openSettings() {
+    document.getElementById('settingsOverlay').classList.add('active');
+    showSettingsSection('appearance');
+}
+
+function closeSettings() {
+    document.getElementById('settingsOverlay').classList.remove('active');
+}
+
+function switchMobileTab(tab) {
+    document.querySelectorAll('.mobile-tab').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+    const map = { pools: '.pools-sidebar', volumes: '.volumes-section', tasks: '.progress-sidebar' };
+    Object.entries(map).forEach(([key, sel]) => {
+        document.querySelector(sel).classList.toggle('mobile-active', key === tab);
+    });
+}
+
+function showSettingsSection(name) {
+    document.querySelectorAll('.settings-nav-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.section === name);
+    });
+    const content = document.getElementById('settingsContent');
+    if (name === 'appearance') {
+        const current = localStorage.getItem(THEME_KEY) || 'system';
+        content.innerHTML = `
+            <h2 class="settings-section-title">Appearance</h2>
+            <p class="settings-section-desc">Choose your preferred color theme.</p>
+            <div class="theme-options">
+                ${['system','light','dark'].map(t => `
+                <div class="theme-card ${current === t ? 'active' : ''}" onclick="selectTheme('${t}')">
+                    <div class="theme-card-icon">${t === 'system' ? '💻' : t === 'light' ? '☀️' : '🌙'}</div>
+                    <div class="theme-card-label">${t.charAt(0).toUpperCase() + t.slice(1)}</div>
+                </div>`).join('')}
+            </div>`;
+    } else if (name === 'maintenance') {
+        content.innerHTML = `
+            <h2 class="settings-section-title">Maintenance</h2>
+            <p class="settings-section-desc">Remove stale lock files and the persisted task state file. Use this if tasks appear stuck or history is out of sync.</p>
+            <button class="btn tonal" onclick="runTroubleshootCleanup()">🧹 Run Cleanup</button>`;
+    } else if (name === 'about') {
+        content.innerHTML = `
+            <h2 class="settings-section-title">v-shipper</h2>
+            <p class="settings-section-desc">Docker volume migration and backup tool.</p>
+            <p class="settings-about-version">Version: <strong id="aboutVersion">–</strong></p>
+            <a href="https://github.com/ZeroOmar/v-shipper" target="_blank" rel="noopener" class="btn tonal">GitHub →</a>`;
+        fetch(`${API_BASE}/health`).then(r => r.json()).then(d => {
+            const el = document.getElementById('aboutVersion');
+            if (el) el.textContent = d.version || '–';
+        }).catch(() => {});
+    }
+}
+
+function selectTheme(theme) {
+    localStorage.setItem(THEME_KEY, theme);
+    if (theme === 'system') {
+        const darkMode = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        applyTheme(darkMode ? 'dark' : 'light');
+    } else {
+        applyTheme(theme);
+    }
+    showSettingsSection('appearance');
+}
+
 // ── Conflict Resolution Modal ─────────────────────────────────────────────────
 
 let _conflictCallback = null;
@@ -1247,9 +1316,11 @@ function createToast(message, type) {
     }, 5000);
 }
 
-// Close modals on background click
+// Close modals / settings on background click
 document.addEventListener('click', (e) => {
-    if (e.target.classList.contains('modal')) {
+    if (e.target.id === 'settingsOverlay') {
+        closeSettings();
+    } else if (e.target.classList.contains('modal')) {
         if (e.target.id === 'taskDetailModal') {
             closeTaskDetail();
         } else if (e.target.id === 'conflictModal') {

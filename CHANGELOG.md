@@ -2,6 +2,19 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.0.10
+
+### Added
+
+- **Settings page** — new ⚙️ Settings button in the header opens a full-screen overlay with a two-panel layout (left nav, right content); contains Appearance (theme selector), Maintenance (cleanup), and About (version + GitHub link) sections; replaces the header Cleanup and Theme toggle buttons
+- **Mobile tab view** — on screens ≤768px the three panels (Pools / Volumes / Tasks) are now shown as a tabbed interface instead of stacking vertically; selecting a pool automatically switches to the Volumes tab
+
+### Changed
+
+- **Header layout** — brand anchors to the left with `flex: 1`; Settings, Refresh, user label, and Logout sit flush to the right; mobile header collapses to a single row (no second tools row)
+- **Backup archive names prefixed with source pool** — archives are now named `{pool}_{volume}_{timestamp}.tar.gz` (e.g. `local_appwrite_20260611_143201.tar.gz`) so the origin pool is always clear in a shared backup destination
+- **Restore modal default volume name** — strips the pool prefix from the archive filename so the suggested restore target is just the volume name (e.g. suggests `appwrite` not `local_appwrite`)
+
 ## 0.0.9
 
 ### Added

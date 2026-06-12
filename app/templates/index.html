@@ -34,8 +34,7 @@
                         <h1>v-shipper</h1>
                     </div>
                     <div class="header-tools">
-                        <button class="btn tonal" onclick="runTroubleshootCleanup()">🧹 Cleanup</button>
-                        <button class="btn tonal" id="themeToggleButton" onclick="toggleTheme()">🎨 System</button>
+                        <button class="btn tonal" onclick="openSettings()">⚙️ Settings</button>
                         <button class="btn tonal" onclick="loadPools()" title="Refresh">🔄</button>
                     </div>
                     <div class="header-user-section">
@@ -47,6 +46,11 @@
         </header>
 
         <div class="container">
+            <div class="mobile-tab-bar">
+                <button class="mobile-tab" data-tab="pools" onclick="switchMobileTab('pools')">📁 Pools</button>
+                <button class="mobile-tab" data-tab="volumes" onclick="switchMobileTab('volumes')">📦 Volumes</button>
+                <button class="mobile-tab" data-tab="tasks" onclick="switchMobileTab('tasks')">📊 Tasks</button>
+            </div>
             <div class="main-layout">
                 <!-- Left sidebar: Pools -->
                 <div class="pools-sidebar">
@@ -138,6 +142,25 @@
     </div>
 
     <div id="toastContainer" class="toast-container"></div>
+
+    <!-- Settings Overlay -->
+    <div id="settingsOverlay" class="settings-overlay">
+        <div class="settings-panel">
+            <div class="settings-nav">
+                <div class="settings-nav-header">
+                    <span>Settings</span>
+                    <button class="close-btn" onclick="closeSettings()">×</button>
+                </div>
+                <ul class="settings-nav-list">
+                    <li class="settings-nav-item" data-section="appearance" onclick="showSettingsSection('appearance')">🎨 Appearance</li>
+                    <li class="settings-nav-item" data-section="maintenance" onclick="showSettingsSection('maintenance')">🧹 Maintenance</li>
+                    <li class="settings-nav-item" data-section="about" onclick="showSettingsSection('about')">ℹ️ About</li>
+                </ul>
+            </div>
+            <div class="settings-content" id="settingsContent"></div>
+        </div>
+    </div>
+
     <script src="/static/main.js"></script>
 </body>
 </html>
