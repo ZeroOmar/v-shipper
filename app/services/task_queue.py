@@ -121,23 +121,35 @@ class TaskQueue:
         """Mark task as completed."""
         if task_id not in self.tasks:
             return
-        
+
         with self.lock:
             task = self.tasks[task_id]
             task["status"] = "completed" if success else "failed"
             task["completed_at"] = time.time()
-            
+
             if error:
                 task["error"] = error
                 print(f"[TASK:{task_id}] Failed: {error}", flush=True)
             else:
                 task["progress_percent"] = 100
                 print(f"[TASK:{task_id}] Completed successfully", flush=True)
-            
+
             if self.running_task_id == task_id:
                 self.running_task_id = None
             self._save_tasks()
-    
+            task_snapshot = dict(task)
+
+        Thread(target=self._fire_notification, args=[task_snapshot], daemon=True).start()
+
+    def _fire_notification(self, task: dict):
+        try:
+            from app.services.notification_service import get_notification_service
+            svc = get_notification_service()
+            if svc:
+                svc.notify_task_completion(task)
+        except Exception as e:
+            print(f"[WARNING] Notification error for task {task.get('task_id')}: {e}", flush=True)
+
     def create_lockfile(self, pool: str, volume: str) -> str:
         """Create exclusive lock for volume operation."""
         lock_file = self.locks_dir / f"{pool}_{volume}.lock"

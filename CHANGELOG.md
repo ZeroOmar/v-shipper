@@ -2,6 +2,19 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.0.13
+
+### Added
+
+- **Telegram notifications** — new Settings → Notifications section; each configuration defines a bot token, chat ID, optional message thread ID (for topic groups), which event topics to watch (`schedule`, `backup`, `migrate`, `restore`, `delete`, `rename`), whether to alert on failures only, an optional custom server URL (for self-hosted Bot API), and an optional message template; multiple configurations can coexist; persisted to `config_dir/vshipper_notifications.json`
+- **Notification test button** — "Test" button on each notification card sends a test message immediately via `POST /api/notifications/{id}/test`
+- **Notification REST API** — 6 new endpoints: `GET /api/notifications`, `POST /api/notifications`, `PUT /api/notifications/{id}`, `DELETE /api/notifications/{id}`, `POST /api/notifications/{id}/toggle`, `POST /api/notifications/{id}/test`
+
+### Fixed
+
+- **Backup falsely reported as failed when archive was created** — `tar` exit code 1 indicates non-fatal warnings (file changed, socket ignored, etc.), not a real failure; the archive is valid and present; now only exit code 2+ is treated as a hard failure; all tar stderr lines are logged to the task log for visibility
+- **Scheduled backup summary always showed 0 failed** — `backup_volume()` returns `False` on failure but the return value was ignored; the result was always recorded as `ok`; now checks the return value and surfaces the sub-task error message in the summary log
+
 ## 0.0.12
 
 ### Added

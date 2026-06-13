@@ -11,12 +11,14 @@ from app.models import (
     MigrateRequest, BackupRequest, RenameRequest, DeleteRequest, RestoreRequest, PoolCreateRequest,
     TaskResponse, TaskProgressResponse, TasksListResponse, HealthResponse, PoolStats, VolumeInfo,
     BackupSchedule, BackupScheduleCreate, SchedulesResponse, VolumeCreateRequest,
+    NotificationConfig, NotificationCreate, NotificationsResponse,
 )
 from app.services.volume_service import get_volume_service
 from app.services.migration_service import get_migration_service
 from app.services.backup_service import get_backup_service
 from app.services.task_queue import get_task_queue
 from app.services.scheduler_service import get_scheduler_service
+from app.services.notification_service import get_notification_service
 from app.config import validate_auth, get_config
 
 router = APIRouter()
@@ -316,10 +318,19 @@ async def rename_volume(request: RenameRequest, session: dict = Depends(require_
         volume_service = get_volume_service(config)
         
         success = volume_service.rename_volume(request.pool, request.old_name, request.new_name)
-        
+
         if not success:
             raise HTTPException(status_code=400, detail="Failed to rename volume")
-        
+
+        svc = get_notification_service()
+        if svc:
+            import threading
+            threading.Thread(
+                target=svc.notify_operation,
+                args=["rename", {"volume": request.old_name, "new_name": request.new_name, "pool": request.pool}],
+                daemon=True,
+            ).start()
+
         return {"status": "ok", "message": "Volume renamed"}
     
     except HTTPException:
@@ -658,3 +669,84 @@ async def run_schedule_now(job_id: str, session: dict = Depends(require_auth)):
         raise HTTPException(status_code=404, detail="Schedule not found")
     svc.trigger_now(job_id)
     return {"status": "triggered"}
+
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+
+def _cfg_to_model(cfg: dict) -> NotificationConfig:
+    return NotificationConfig(
+        id=cfg["id"],
+        name=cfg.get("name", ""),
+        token=cfg.get("token", ""),
+        chat_id=cfg.get("chat_id", ""),
+        message_thread_id=cfg.get("message_thread_id"),
+        topics=cfg.get("topics", []),
+        on_failure_only=cfg.get("on_failure_only", False),
+        server_url=cfg.get("server_url", "https://api.telegram.org"),
+        message_template=cfg.get("message_template"),
+        enabled=cfg.get("enabled", True),
+    )
+
+
+@router.get("/api/notifications", response_model=NotificationsResponse)
+async def list_notifications(session: dict = Depends(require_auth)):
+    """List all notification configurations."""
+    svc = get_notification_service()
+    if not svc:
+        return NotificationsResponse(notifications=[])
+    return NotificationsResponse(notifications=[_cfg_to_model(c) for c in svc.list_all()])
+
+
+@router.post("/api/notifications", response_model=NotificationConfig)
+async def create_notification(body: NotificationCreate, session: dict = Depends(require_auth)):
+    """Create a new notification configuration."""
+    svc = get_notification_service()
+    if not svc:
+        raise HTTPException(status_code=503, detail="Notification service unavailable")
+    cfg = svc.create(body.model_dump())
+    return _cfg_to_model(cfg)
+
+
+@router.put("/api/notifications/{cfg_id}", response_model=NotificationConfig)
+async def update_notification(cfg_id: str, body: NotificationCreate, session: dict = Depends(require_auth)):
+    """Update an existing notification configuration."""
+    svc = get_notification_service()
+    if not svc:
+        raise HTTPException(status_code=503, detail="Notification service unavailable")
+    cfg = svc.update(cfg_id, body.model_dump())
+    if cfg is None:
+        raise HTTPException(status_code=404, detail="Notification config not found")
+    return _cfg_to_model(cfg)
+
+
+@router.delete("/api/notifications/{cfg_id}")
+async def delete_notification(cfg_id: str, session: dict = Depends(require_auth)):
+    """Delete a notification configuration."""
+    svc = get_notification_service()
+    if not svc or not svc.delete(cfg_id):
+        raise HTTPException(status_code=404, detail="Notification config not found")
+    return {"status": "deleted"}
+
+
+@router.post("/api/notifications/{cfg_id}/toggle", response_model=NotificationConfig)
+async def toggle_notification(cfg_id: str, session: dict = Depends(require_auth)):
+    """Enable or disable a notification configuration."""
+    svc = get_notification_service()
+    if not svc:
+        raise HTTPException(status_code=503, detail="Notification service unavailable")
+    cfg = svc.toggle(cfg_id)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail="Notification config not found")
+    return _cfg_to_model(cfg)
+
+
+@router.post("/api/notifications/{cfg_id}/test")
+async def test_notification(cfg_id: str, session: dict = Depends(require_auth)):
+    """Send a test Telegram message for this configuration."""
+    svc = get_notification_service()
+    if not svc:
+        raise HTTPException(status_code=503, detail="Notification service unavailable")
+    ok = svc.test(cfg_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Test message failed — check token, chat_id, and server URL")
+    return {"status": "sent"}

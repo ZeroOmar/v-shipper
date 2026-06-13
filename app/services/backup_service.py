@@ -149,27 +149,41 @@ class BackupService:
 
     def _create_archive(self, task_id: str, source_path: str, backup_path: str) -> bool:
         """Create tar.gz archive of volume."""
-        
         try:
             print(f"[TASK:{task_id}] Creating archive: {backup_path}", flush=True)
-            
+
             process = subprocess.Popen(
                 ["tar", "-czf", backup_path, "-C", str(Path(source_path).parent), Path(source_path).name],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
             )
-            
-            return_code = process.wait()
-            
-            if return_code != 0:
-                stderr = process.stderr.read()
-                print(f"[ERROR] Archive creation failed: {stderr}", flush=True)
+
+            _, stderr = process.communicate()
+            return_code = process.returncode
+
+            if stderr.strip():
+                for line in stderr.strip().splitlines():
+                    print(f"[TASK:{task_id}] tar: {line.strip()}", flush=True)
+
+            if return_code == 0:
+                size_mb = Path(backup_path).stat().st_size / (1024 ** 2)
+                print(f"[TASK:{task_id}] Archive created: {size_mb:.2f} MB", flush=True)
+                return True
+
+            if return_code == 1:
+                # Exit code 1 = non-fatal warnings (file changed, socket ignored, etc.)
+                # Archive was still written; verify it below
+                if Path(backup_path).exists() and Path(backup_path).stat().st_size > 0:
+                    size_mb = Path(backup_path).stat().st_size / (1024 ** 2)
+                    print(f"[TASK:{task_id}] Archive created with warnings (exit 1): {size_mb:.2f} MB", flush=True)
+                    return True
+                print(f"[TASK:{task_id}] Archive creation failed with warnings and no output file", flush=True)
                 return False
-            
-            print(f"[TASK:{task_id}] Archive created successfully", flush=True)
-            return True
-        
+
+            print(f"[TASK:{task_id}] Archive creation failed (exit {return_code})", flush=True)
+            return False
+
         except Exception as e:
             print(f"[ERROR] Archive creation error: {e}", flush=True)
             return False

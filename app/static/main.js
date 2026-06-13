@@ -1299,6 +1299,15 @@ function showSettingsSection(name) {
             <p class="settings-section-desc">Automated recurring backups with retention policies.</p>
             <div id="scheduleList" class="schedule-list"><div class="placeholder-text">Loading…</div></div>`;
         loadSchedules();
+    } else if (name === 'notifications') {
+        content.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                <h2 class="settings-section-title" style="margin:0;">Notifications</h2>
+                <button class="btn" onclick="openNotificationForm()">+ New Notification</button>
+            </div>
+            <p class="settings-section-desc">Send Telegram alerts when tasks complete or fail.</p>
+            <div id="notificationList" class="notification-list"><div class="placeholder-text">Loading…</div></div>`;
+        loadNotifications();
     }
 }
 
@@ -1544,6 +1553,242 @@ async function runScheduleNow(jobId) {
         } else {
             const data = await res.json();
             showError(data.detail || 'Failed to trigger schedule');
+        }
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+    }
+}
+
+// ── Notifications ─────────────────────────────────────────────────────────────
+
+const NOTIFICATION_TOPICS = [
+    { id: 'schedule', label: 'Scheduled Backup', desc: 'When a scheduled backup job completes' },
+    { id: 'backup',   label: 'Backup',            desc: 'When a manual backup completes' },
+    { id: 'migrate',  label: 'Migrate',           desc: 'When a volume migration completes' },
+    { id: 'restore',  label: 'Restore',           desc: 'When a backup restore completes' },
+    { id: 'delete',   label: 'Delete',            desc: 'When a volume is deleted' },
+    { id: 'rename',   label: 'Rename',            desc: 'When a volume is renamed' },
+];
+
+const NOTIFICATION_DEFAULT_TEMPLATE = [
+    '\u{1F514} *{task_type_label}* {status_emoji}',
+    '\u{1F4E6} Volume: `{volume}` on `{pool}`',
+    'Status: {status}',
+    '⏱ Duration: {elapsed}s',
+    '\u{1F552} {timestamp}',
+    '{error_block}',
+].join('\n');
+
+async function loadNotifications() {
+    const list = document.getElementById('notificationList');
+    if (!list) return;
+    try {
+        const res = await fetch(`${API_BASE}/notifications`, { headers: { 'Authorization': `Bearer ${sessionId}` } });
+        const data = await res.json();
+        if (res.ok) {
+            renderNotificationList(data.notifications || []);
+        } else {
+            list.innerHTML = `<div class="placeholder-text">Failed to load notifications</div>`;
+        }
+    } catch (e) {
+        if (list) list.innerHTML = `<div class="placeholder-text">Error: ${escapeHtml(e.message)}</div>`;
+    }
+}
+
+function renderNotificationList(configs) {
+    const list = document.getElementById('notificationList');
+    if (!list) return;
+    if (!configs.length) {
+        list.innerHTML = `<div class="placeholder-text">No notifications yet. Click "+ New Notification" to create one.</div>`;
+        return;
+    }
+    list.innerHTML = configs.map(cfg => {
+        const topicChips = (cfg.topics || [])
+            .map(t => {
+                const topic = NOTIFICATION_TOPICS.find(x => x.id === t);
+                return `<span class="topic-chip">${escapeHtml(topic ? topic.label : t)}</span>`;
+            }).join('');
+        const failureLabel = cfg.on_failure_only ? ' · Failures only' : '';
+        const enabledClass = cfg.enabled ? 'on' : 'off';
+        const enabledLabel = cfg.enabled ? 'Enabled' : 'Disabled';
+        return `
+        <div class="notification-row">
+            <div class="notification-row-main">
+                <div class="notification-row-name">${escapeHtml(cfg.name)}</div>
+                <div class="notification-row-meta">
+                    Chat: <code>${escapeHtml(cfg.chat_id)}</code>${failureLabel}
+                </div>
+                <div style="margin-top:4px;">${topicChips}</div>
+            </div>
+            <div class="notification-row-actions">
+                <span class="schedule-enabled-chip ${enabledClass}" onclick="toggleNotification('${cfg.id}')">${enabledLabel}</span>
+                <button class="btn tonal" onclick="testNotification('${cfg.id}')">Test</button>
+                <button class="btn tonal" onclick="openNotificationForm('${cfg.id}')">Edit</button>
+                <button class="btn danger" onclick="deleteNotification('${cfg.id}')">Delete</button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+async function openNotificationForm(cfgId = null) {
+    const content = document.getElementById('settingsContent');
+    content.innerHTML = `<div class="placeholder-text">Loading…</div>`;
+
+    let cfg = null;
+    if (cfgId) {
+        try {
+            const res = await fetch(`${API_BASE}/notifications`, { headers: { 'Authorization': `Bearer ${sessionId}` } });
+            const data = await res.json();
+            cfg = (data.notifications || []).find(c => c.id === cfgId) || null;
+        } catch (e) { /* ignore */ }
+    }
+
+    const selectedTopics = new Set(cfg?.topics || []);
+    const topicsHtml = NOTIFICATION_TOPICS.map(t => `
+        <label class="notification-topic-item">
+            <input type="checkbox" data-topic="${t.id}" ${selectedTopics.has(t.id) ? 'checked' : ''}>
+            <span title="${escapeHtml(t.desc)}">${escapeHtml(t.label)}</span>
+        </label>`).join('');
+
+    content.innerHTML = `
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
+            <button class="btn tonal" onclick="showSettingsSection('notifications')">← Back</button>
+            <h2 class="settings-section-title" style="margin:0;">${cfgId ? 'Edit Notification' : 'New Notification'}</h2>
+        </div>
+        <div class="notification-form">
+            <label>Name
+                <input type="text" id="nfName" value="${escapeHtml(cfg?.name || '')}" placeholder="e.g. Homelab Alerts">
+            </label>
+            <label>Bot Token
+                <input type="password" id="nfToken" value="${escapeHtml(cfg?.token || '')}" placeholder="1234567890:ABC...">
+                <span class="field-hint">Create a bot via @BotFather on Telegram.</span>
+            </label>
+            <label>Chat ID
+                <input type="text" id="nfChatId" value="${escapeHtml(cfg?.chat_id || '')}" placeholder="-1001234567890">
+                <span class="field-hint">Your chat or group ID. Use @userinfobot to find it.</span>
+            </label>
+            <label>Message Thread ID <span style="font-weight:400;font-size:11px;color:var(--md-on-surface-variant)">(optional — for topic groups)</span>
+                <input type="text" id="nfThreadId" value="${escapeHtml(cfg?.message_thread_id || '')}" placeholder="">
+            </label>
+            <label>Notification Topics
+                <div class="notification-topics" id="nfTopics">${topicsHtml}</div>
+            </label>
+            <label style="flex-direction:row;align-items:center;gap:10px;cursor:pointer;">
+                <input type="checkbox" id="nfFailureOnly" ${cfg?.on_failure_only ? 'checked' : ''} style="width:15px;height:15px;">
+                <span>Notify on failed tasks only</span>
+            </label>
+            <label>Server URL <span style="font-weight:400;font-size:11px;color:var(--md-on-surface-variant)">(optional — for self-hosted Bot API)</span>
+                <input type="text" id="nfServerUrl" value="${escapeHtml(cfg?.server_url || '')}" placeholder="https://api.telegram.org">
+            </label>
+            <label>Message Template <span style="font-weight:400;font-size:11px;color:var(--md-on-surface-variant)">(optional — leave blank for default)</span>
+                <textarea id="nfTemplate" placeholder="${escapeHtml(NOTIFICATION_DEFAULT_TEMPLATE)}">${escapeHtml(cfg?.message_template || '')}</textarea>
+                <span class="field-hint">Variables: {task_type_label} {status} {status_emoji} {volume} {pool} {elapsed} {timestamp} {error} {error_block} {job_name} {hostname}</span>
+            </label>
+            <div class="notification-form-actions">
+                <button class="btn success" onclick="saveNotification(${cfgId ? `'${cfgId}'` : 'null'})">Save</button>
+                <button class="btn tonal" onclick="showSettingsSection('notifications')">Cancel</button>
+            </div>
+        </div>`;
+}
+
+async function saveNotification(cfgId) {
+    const name = document.getElementById('nfName')?.value.trim();
+    const token = document.getElementById('nfToken')?.value.trim();
+    const chatId = document.getElementById('nfChatId')?.value.trim();
+    const threadId = document.getElementById('nfThreadId')?.value.trim() || null;
+    const failureOnly = document.getElementById('nfFailureOnly')?.checked || false;
+    const serverUrl = document.getElementById('nfServerUrl')?.value.trim() || 'https://api.telegram.org';
+    const template = document.getElementById('nfTemplate')?.value.trim() || null;
+
+    if (!name) { showError('Name is required'); return; }
+    if (!token) { showError('Bot token is required'); return; }
+    if (!chatId) { showError('Chat ID is required'); return; }
+
+    const topics = [];
+    document.querySelectorAll('#nfTopics input[type="checkbox"]:checked').forEach(cb => {
+        topics.push(cb.dataset.topic);
+    });
+    if (!topics.length) { showError('Select at least one notification topic'); return; }
+
+    const body = {
+        name,
+        token,
+        chat_id: chatId,
+        message_thread_id: threadId,
+        topics,
+        on_failure_only: failureOnly,
+        server_url: serverUrl,
+        message_template: template,
+    };
+
+    const url = cfgId ? `${API_BASE}/notifications/${cfgId}` : `${API_BASE}/notifications`;
+    const method = cfgId ? 'PUT' : 'POST';
+
+    try {
+        const res = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionId}` },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showSuccess(cfgId ? 'Notification updated' : 'Notification created');
+            showSettingsSection('notifications');
+        } else {
+            showError(data.detail || 'Failed to save notification');
+        }
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+    }
+}
+
+async function deleteNotification(cfgId) {
+    if (!confirm('Delete this notification configuration?')) return;
+    try {
+        const res = await fetch(`${API_BASE}/notifications/${cfgId}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${sessionId}` },
+        });
+        if (res.ok) {
+            showSuccess('Notification deleted');
+            loadNotifications();
+        } else {
+            const data = await res.json();
+            showError(data.detail || 'Failed to delete notification');
+        }
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+    }
+}
+
+async function toggleNotification(cfgId) {
+    try {
+        const res = await fetch(`${API_BASE}/notifications/${cfgId}/toggle`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${sessionId}` },
+        });
+        if (res.ok) {
+            loadNotifications();
+        } else {
+            const data = await res.json();
+            showError(data.detail || 'Failed to toggle notification');
+        }
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+    }
+}
+
+async function testNotification(cfgId) {
+    try {
+        const res = await fetch(`${API_BASE}/notifications/${cfgId}/test`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${sessionId}` },
+        });
+        if (res.ok) {
+            showSuccess('Test message sent — check your Telegram');
+        } else {
+            const data = await res.json();
+            showError(data.detail || 'Test message failed');
         }
     } catch (e) {
         showError(`Error: ${e.message}`);

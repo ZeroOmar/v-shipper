@@ -13,6 +13,7 @@ from app.services.volume_service import get_volume_service
 from app.services.migration_service import get_migration_service
 from app.services.backup_service import get_backup_service
 from app.services.scheduler_service import get_scheduler_service
+from app.services.notification_service import get_notification_service
 from app.api.routes import router
 
 # Load configuration
@@ -33,6 +34,8 @@ get_volume_service(config)
 get_migration_service(config, get_volume_service(config))
 get_backup_service(config, get_volume_service(config))
 get_scheduler_service(config, get_backup_service(config, get_volume_service(config)), get_task_queue())
+get_notification_service(config_dir=config.config_dir)
+print(f"[APP] Notification service initialized", flush=True)
 
 
 @asynccontextmanager

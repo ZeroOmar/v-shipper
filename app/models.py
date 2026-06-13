@@ -189,7 +189,7 @@ class VolumeCreateRequest(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str = "ok"
-    version: str = "0.0.12"
+    version: str = "0.0.13"
 
 
 # ── Backup Schedule Models ────────────────────────────────────────────────────
@@ -224,3 +224,36 @@ class BackupScheduleCreate(BaseModel):
 class SchedulesResponse(BaseModel):
     """List of backup schedules."""
     schedules: List[BackupSchedule]
+
+
+# ── Notification Models ───────────────────────────────────────────────────────
+
+class NotificationConfig(BaseModel):
+    """A persisted Telegram notification configuration."""
+    id: str
+    name: str
+    token: str
+    chat_id: str
+    message_thread_id: Optional[str] = None
+    topics: List[str]
+    on_failure_only: bool = False
+    server_url: str = "https://api.telegram.org"
+    message_template: Optional[str] = None
+    enabled: bool = True
+
+
+class NotificationCreate(BaseModel):
+    """Request body for creating or updating a notification config."""
+    name: str
+    token: str
+    chat_id: str
+    message_thread_id: Optional[str] = None
+    topics: List[str]
+    on_failure_only: bool = False
+    server_url: str = "https://api.telegram.org"
+    message_template: Optional[str] = None
+
+
+class NotificationsResponse(BaseModel):
+    """List of notification configs."""
+    notifications: List[NotificationConfig]

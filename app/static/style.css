@@ -1344,6 +1344,77 @@ body.dark .log-line { color: #C8DCFF; }
   .schedule-row-actions { justify-content: flex-start; }
 }
 
+/* ── Notifications ───────────────────────────────────────────────────────────── */
+
+.notification-list { display: flex; flex-direction: column; gap: 8px; }
+
+.notification-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: start;
+  padding: 12px 14px;
+  border-radius: var(--md-r-lg);
+  background: var(--md-surface-container-low);
+  border: 1.5px solid var(--md-outline-variant);
+}
+.notification-row-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.notification-row-name { font-weight: 600; font-size: 14px; }
+.notification-row-meta { font-size: 12px; color: var(--md-on-surface-variant); }
+.notification-row-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+
+.topic-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--md-r-full);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--md-secondary-container);
+  color: var(--md-on-secondary-container);
+  margin-right: 3px;
+}
+
+.notification-form { display: flex; flex-direction: column; gap: 16px; }
+.notification-form > label { display: flex; flex-direction: column; font-size: 13px; font-weight: 500; color: var(--md-on-surface); }
+.notification-form input[type="text"],
+.notification-form input[type="password"],
+.notification-form select,
+.notification-form textarea {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: var(--md-r-sm);
+  border: 1.5px solid var(--md-outline-variant);
+  background: var(--md-surface-container);
+  color: var(--md-on-surface);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.notification-form textarea {
+  resize: vertical;
+  min-height: 80px;
+  font-family: monospace;
+  font-size: 12px;
+}
+.notification-form input:focus,
+.notification-form select:focus,
+.notification-form textarea:focus { border-color: var(--md-primary); }
+.notification-form input[type="text"].optional-hint::placeholder { font-style: italic; }
+.notification-form .field-hint { font-size: 11px; color: var(--md-on-surface-variant); margin-top: 4px; font-weight: 400; }
+.notification-topics { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.notification-topic-item { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 400; cursor: pointer; }
+.notification-topic-item input[type="checkbox"] { width: 15px; height: 15px; cursor: pointer; }
+.notification-form-actions { display: flex; gap: 8px; padding-top: 4px; }
+
+@media (max-width: 600px) {
+  .notification-row { grid-template-columns: 1fr; }
+  .notification-row-actions { justify-content: flex-start; }
+}
+
 /* ── Volumes header ──────────────────────────────────────────────────────────── */
 
 .volumes-header {

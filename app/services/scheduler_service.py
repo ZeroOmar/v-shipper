@@ -204,12 +204,19 @@ class SchedulerService:
                     parent_job=job['name'],
                 )
                 try:
-                    self._backup_service.backup_volume(sub_task_id, pool_name, vol_name, job['backup_pool'])
-                    results[f"{pool_name}/{vol_name}"] = 'ok'
-                    self._apply_retention(job, vol, summary_task_id)
+                    ok = self._backup_service.backup_volume(sub_task_id, pool_name, vol_name, job['backup_pool'])
                 except Exception as e:
                     print(f"[TASK:{summary_task_id}] ✗ Failed {pool_name}/{vol_name}: {e}", flush=True)
+                    ok = False
+
+                if ok:
+                    results[f"{pool_name}/{vol_name}"] = 'ok'
+                    self._apply_retention(job, vol, summary_task_id)
+                else:
                     results[f"{pool_name}/{vol_name}"] = 'failed'
+                    sub_task = self._task_queue.get_task(sub_task_id)
+                    reason = (sub_task or {}).get('error') or 'backup returned failure'
+                    print(f"[TASK:{summary_task_id}] ✗ Failed {pool_name}/{vol_name}: {reason}", flush=True)
 
             self._task_queue.update_progress(summary_task_id, {
                 'progress_percent': min(99, int((i + 1) * 100 / n)),
