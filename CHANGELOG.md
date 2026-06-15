@@ -2,6 +2,13 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.1.1
+
+### Fixed
+
+- **Tonal buttons unreadable in light mode** — `.btn.tonal` now uses surface-aware tokens (`--md-surface-container-highest` / `--md-on-surface`) so buttons like Rename, + New Volume, Run, Edit, Test, Cancel, Back and Back are legible on light backgrounds; the header retains its white-on-dark appearance via a scoped `.header-tools .btn.tonal` override
+- **Scheduled task pill indistinguishable from Backup in light mode** — added `--md-tertiary-container` / `--md-on-tertiary-container` tokens (violet range) in both light and dark themes; the Scheduled pill now uses these tokens instead of the secondary-container color which was nearly identical to primary-container in light mode
+
 ## 0.1.0
 
 ### Fixed

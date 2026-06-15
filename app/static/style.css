@@ -24,6 +24,9 @@
   --md-success-container:        #9AF59C;
   --md-on-success-container:     #002204;
 
+  --md-tertiary-container:        #E8DEF8;
+  --md-on-tertiary-container:    #21005D;
+
   --md-warn-container:           #FFEFD1;
   --md-on-warn-container:        #4A2C00;
 
@@ -90,6 +93,9 @@ body.dark {
   --md-on-success:               #003909;
   --md-success-container:        #005313;
   --md-on-success-container:     #9AF59C;
+
+  --md-tertiary-container:        #4D3B72;
+  --md-on-tertiary-container:    #E8DEF8;
 
   --md-warn-container:           #4A3200;
   --md-on-warn-container:        #FFD98C;
@@ -230,14 +236,22 @@ button, .btn {
 button:hover, .btn:hover   { opacity: 0.92; box-shadow: var(--md-elev-2); }
 button:active, .btn:active { opacity: 0.80; box-shadow: none; }
 
-/* Tonal button — used in header */
+/* Tonal button — surface-aware secondary action */
 .btn.tonal {
+  background: var(--md-surface-container-highest);
+  color: var(--md-on-surface);
+  box-shadow: none;
+  border: 1.5px solid var(--md-outline-variant);
+}
+.btn.tonal:hover { background: var(--md-surface-container-high); box-shadow: none; opacity: 1; }
+
+/* Header tonal override — white text on dark header */
+.header-tools .btn.tonal {
   background: var(--md-header-tonal);
   color: var(--md-header-on);
-  box-shadow: none;
   border: 1px solid rgba(255,255,255,0.18);
 }
-.btn.tonal:hover { background: rgba(255,255,255,0.20); box-shadow: none; opacity: 1; }
+.header-tools .btn.tonal:hover { background: rgba(255,255,255,0.20); }
 
 /* Danger */
 .btn.danger {
@@ -627,7 +641,7 @@ input[type="checkbox"] {
   color: var(--md-on-surface-variant);
 }
 .task-type-pill.type-backup           { background: var(--md-primary-container);   color: var(--md-on-primary-container); }
-.task-type-pill.type-scheduled_backup { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
+.task-type-pill.type-scheduled_backup { background: var(--md-tertiary-container);  color: var(--md-on-tertiary-container); }
 .task-type-pill.type-migrate          { background: var(--md-warn-container);      color: var(--md-on-warn-container); }
 .task-type-pill.type-restore          { background: var(--md-success-container);   color: var(--md-on-success-container); }
 .task-type-pill.type-delete           { background: var(--md-error-container);     color: var(--md-on-error-container); }
