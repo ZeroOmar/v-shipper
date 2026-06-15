@@ -189,7 +189,7 @@ class VolumeCreateRequest(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str = "ok"
-    version: str = "0.0.13"
+    version: str = "0.1.0"
 
 
 # ── Backup Schedule Models ────────────────────────────────────────────────────

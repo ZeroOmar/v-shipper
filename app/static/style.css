@@ -1337,6 +1337,17 @@ body.dark .log-line { color: #C8DCFF; }
   color: var(--md-on-surface);
 }
 
+.schedule-vol-missing { color: var(--md-on-error-container); }
+.schedule-vol-missing-badge {
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--md-error-container);
+  color: var(--md-on-error-container);
+  padding: 1px 5px;
+  border-radius: var(--md-r-xs);
+  margin-left: 2px;
+}
+
 .schedule-form-actions { display: flex; gap: 8px; padding-top: 4px; }
 
 @media (max-width: 600px) {

@@ -2,6 +2,13 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.1.0
+
+### Fixed
+
+- **Backup of deleted volumes creates empty archive** — backup tasks now check that the source volume directory exists before invoking `tar`; if the volume has been deleted the task fails immediately with a clear error (`"Source volume 'X' not found in pool 'Y' — it may have been deleted"`) and no archive file is created
+- **Schedule edit form hides deleted volumes** — when a scheduled volume no longer exists in its pool the edit form now shows it inline with a red ⚠ not found badge (still checked); a warning banner at the top of the form explains that unchecking and saving will remove it from the schedule
+
 ## 0.0.13
 
 ### Added

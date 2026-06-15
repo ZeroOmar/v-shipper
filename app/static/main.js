@@ -1416,27 +1416,45 @@ async function openScheduleForm(jobId = null) {
         { label: 'Monthly 1st', value: '0 2 1 * *' },
     ];
 
+    // Detect volumes in this schedule that no longer exist in their pool
+    const allMissingVols = dockerPools.flatMap(p => {
+        const current = volumesByPool[p.name] || [];
+        return (job?.volumes || [])
+            .filter(v => v.pool === p.name && !current.includes(v.volume))
+            .map(v => `${v.pool}/${v.volume}`);
+    });
+
     const volumeGroupsHtml = dockerPools.map(p => {
-        const vols = volumesByPool[p.name] || [];
-        if (!vols.length) return '';
+        const currentVols = volumesByPool[p.name] || [];
+        const missingInPool = (job?.volumes || [])
+            .filter(v => v.pool === p.name && !currentVols.includes(v.volume))
+            .map(v => v.volume);
+        const allVols = [...currentVols, ...missingInPool];
+        if (!allVols.length) return '';
         return `<div>
             <div class="schedule-pool-group-title">${escapeHtml(p.name)}</div>
-            ${vols.map(v => {
+            ${allVols.map(v => {
                 const key = `${p.name}::${v}`;
                 const checked = selectedVols.has(key) ? 'checked' : '';
-                return `<label class="schedule-vol-item">
+                const missing = missingInPool.includes(v);
+                return `<label class="schedule-vol-item${missing ? ' schedule-vol-missing' : ''}">
                     <input type="checkbox" data-pool="${escapeHtml(p.name)}" data-vol="${escapeHtml(v)}" ${checked}>
-                    ${escapeHtml(v)}
+                    ${escapeHtml(v)}${missing ? ' <span class="schedule-vol-missing-badge">⚠ not found</span>' : ''}
                 </label>`;
             }).join('')}
         </div>`;
     }).join('');
+
+    const missingWarning = allMissingVols.length
+        ? `<div class="warning-banner" style="margin-bottom:12px;">⚠ ${allMissingVols.length} volume${allMissingVols.length !== 1 ? 's' : ''} in this schedule no longer exist. Uncheck them and save to remove from the schedule.</div>`
+        : '';
 
     content.innerHTML = `
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
             <button class="btn tonal" onclick="showSettingsSection('schedules')">← Back</button>
             <h2 class="settings-section-title" style="margin:0;">${jobId ? 'Edit Schedule' : 'New Schedule'}</h2>
         </div>
+        ${missingWarning}
         <div class="schedule-form">
             <label>Name
                 <input type="text" id="sfName" value="${escapeHtml(job?.name || '')}" placeholder="e.g. Nightly Production Backup">

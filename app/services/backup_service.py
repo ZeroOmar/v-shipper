@@ -67,6 +67,12 @@ class BackupService:
             else:
                 source_path = f"{source_pool['path']}/{source_volume_name}"
 
+            if not Path(source_path).exists():
+                error_msg = f"Source volume '{source_volume_name}' not found in pool '{source_pool_name}' — it may have been deleted"
+                print(f"[TASK:{task_id}] {error_msg}", flush=True)
+                self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                return False
+
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
             archive_name = f"{source_pool_name}_{source_volume_name}_{timestamp}.tar.gz"
             
