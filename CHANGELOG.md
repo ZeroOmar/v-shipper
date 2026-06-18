@@ -2,6 +2,21 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.3.0
+
+### Fixed
+
+- **Backups no longer report success when files are silently dropped** — `tar` exits 1 for both harmless warnings (a file changed mid-read, a socket skipped) and fatal ones where files were *omitted* from the archive (permission denied, unreadable, vanished mid-run). The exit-1 path previously accepted any non-empty output file as success, so an incomplete archive was reported as "Completed successfully". Archive creation now inspects `tar`'s stderr and fails the backup when it sees errors that drop files (`Permission denied`, `Can't open`, `Cannot stat`, `Error exit delayed from previous errors`, etc.), while still tolerating genuinely benign warnings
+- **Partial archives are cleaned up on failure** — when archive creation fails for a local backup pool, the incomplete `.tar.gz` is now deleted so it can't be mistaken for a good backup or restored later (the remote-pool path already cleaned up on transfer failure)
+
+### Added
+
+- **Scheduled-run drill-down view** — the detail page for a scheduled backup now lists every per-volume backup that run spawned as a mini task list; each entry opens its own task detail (logs, params, progress) with a "← Back" link that returns to the schedule run. Per-volume sub-tasks are correlated to their run via a new `parent_task_id` tag so multiple runs of the same schedule stay separate
+
+### Changed
+
+- **Scheduled per-volume backups are hidden from the main task list** — the individual `backup` tasks created by a schedule no longer clutter the task history; they live inside their parent scheduled-run's detail view. The scheduled-run summary task itself remains in the list
+
 ## 0.2.0
 
 ### Security

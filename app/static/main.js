@@ -1043,14 +1043,18 @@ function getTaskTargetLabel(task) {
 function renderTaskHistory() {
     const progressPanel = document.getElementById('progressPanel');
 
-    if (taskHistory.length === 0) {
+    // Per-volume backups spawned by a schedule are hidden here — they live inside
+    // their parent "Scheduled" task's detail view instead.
+    const visibleTasks = taskHistory.filter(task => !(task.params && task.params.scheduled));
+
+    if (visibleTasks.length === 0) {
         progressPanel.innerHTML = '<div class="placeholder-text">No active tasks</div>';
         return;
     }
 
-    const totalPages = Math.ceil(taskHistory.length / TASKS_PER_PAGE);
+    const totalPages = Math.ceil(visibleTasks.length / TASKS_PER_PAGE);
     taskPage = Math.max(0, Math.min(taskPage, totalPages - 1));
-    const pageTasks = taskHistory.slice(taskPage * TASKS_PER_PAGE, (taskPage + 1) * TASKS_PER_PAGE);
+    const pageTasks = visibleTasks.slice(taskPage * TASKS_PER_PAGE, (taskPage + 1) * TASKS_PER_PAGE);
 
     const items = pageTasks.map(task => {
         const targetLabel = getTaskTargetLabel(task);
@@ -1938,6 +1942,7 @@ function escapeHtml(str) {
 
 let _taskDetailPollInterval = null;
 let _taskDetailCurrentId = null;
+let _taskDetailStack = [];
 
 const PARAM_LABELS = {
     source_pool:       'Source Pool',
@@ -1953,14 +1958,40 @@ const PARAM_LABELS = {
     delete_source:     'Delete Source',
     compress:          'Compress',
     exclude_patterns:  'Exclude Patterns',
+    job_name:          'Schedule',
+    parent_job:        'Schedule',
+    total_volumes:     'Volumes',
+    scheduled:         'Scheduled',
 };
+
+// Internal correlation fields — not useful to show in the params table.
+const HIDDEN_PARAM_KEYS = new Set(['parent_task_id', 'job_id']);
 
 function openTaskDetailModalById(taskId) {
     const task = taskHistory.find(t => t.task_id === taskId);
     if (task) openTaskDetailModal(task);
 }
 
+// Drill into a sub-task from an already-open detail view, remembering where we
+// came from so "← Back" can return to the parent (e.g. the Scheduled task).
+function navigateToTaskDetail(taskId) {
+    if (_taskDetailCurrentId && _taskDetailCurrentId !== taskId) {
+        _taskDetailStack.push(_taskDetailCurrentId);
+    }
+    openTaskDetailModalById(taskId);
+}
+
+function taskDetailBack() {
+    const prev = _taskDetailStack.pop();
+    if (prev) openTaskDetailModalById(prev);
+}
+
 function openTaskDetailModal(task) {
+    // Drop any poll from a previously-open detail before we repurpose the modal.
+    if (_taskDetailPollInterval) {
+        clearInterval(_taskDetailPollInterval);
+        _taskDetailPollInterval = null;
+    }
     _taskDetailCurrentId = task.task_id;
     document.getElementById('taskDetailTitle').textContent =
         (task.task_type || 'Task').toUpperCase();
@@ -1979,6 +2010,7 @@ function closeTaskDetail() {
         _taskDetailPollInterval = null;
     }
     _taskDetailCurrentId = null;
+    _taskDetailStack = [];
     closeModal('taskDetailModal');
 }
 
@@ -2018,7 +2050,7 @@ function _renderTaskDetail(task, logLines) {
 
     const params = task.params || {};
     const paramRows = Object.entries(params)
-        .filter(([, v]) => v !== null && v !== undefined && v !== '')
+        .filter(([k, v]) => v !== null && v !== undefined && v !== '' && !HIDDEN_PARAM_KEYS.has(k))
         .map(([k, v]) => {
             const label = PARAM_LABELS[k] || k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
             let val;
@@ -2036,7 +2068,34 @@ function _renderTaskDetail(task, logLines) {
     const startedStr  = formatDateTime(task.started_at);
     const completedStr = formatDateTime(task.completed_at);
 
+    const backBtn = _taskDetailStack.length
+        ? `<button class="btn tonal task-detail-back-btn" data-action="task-detail-back">← Back</button>`
+        : '';
+
+    // For a "Scheduled" run, list the per-volume backups it spawned. Each is its
+    // own task and opens its own detail view (with a back link to here).
+    let subTaskSection = '';
+    if (task.task_type === 'scheduled_backup') {
+        const subTasks = taskHistory.filter(t => t.params && t.params.parent_task_id === task.task_id);
+        const subTaskHtml = subTasks.length
+            ? subTasks.map(st => `
+                <div class="subtask-item" data-action="nav-task-detail" data-id="${escapeHtml(st.task_id)}" title="Click for details">
+                    <div class="subtask-main">
+                        <span class="task-status ${st.status}">${st.status.toUpperCase()}</span>
+                        <span class="subtask-target">${escapeHtml(getTaskTargetLabel(st))}</span>
+                    </div>
+                    <div class="subtask-meta">${st.progress_percent || 0}%${st.error ? ' · failed' : ''}</div>
+                </div>`).join('')
+            : '<div class="log-empty">No volume backups recorded for this run yet.</div>';
+        subTaskSection = `
+            <div class="task-detail-section">
+                <div class="task-detail-section-title">Volume Backups (${subTasks.length})</div>
+                <div class="subtask-list">${subTaskHtml}</div>
+            </div>`;
+    }
+
     document.getElementById('taskDetailBody').innerHTML = `
+        ${backBtn}
         <div class="task-detail-header">
             <span class="task-type-pill type-${(task.task_type || 'operation').replace(/[^a-z0-9_]/gi, '_')}">${getTaskTypeDisplay(task.task_type)}</span>
             <span class="task-status ${task.status}">${task.status.toUpperCase()}</span>
@@ -2064,6 +2123,8 @@ function _renderTaskDetail(task, logLines) {
             <div class="task-detail-section-title">Parameters</div>
             <table class="param-table"><tbody>${paramRows}</tbody></table>
         </div>` : ''}
+
+        ${subTaskSection}
 
         <div class="task-detail-section">
             <div class="task-detail-section-title">
@@ -2134,6 +2195,8 @@ const ACTION_HANDLERS = {
     'delete-notification': (d) => deleteNotification(d.id),
     'save-notification':   (d) => saveNotification(d.id ?? null),
     'open-task-detail':    (d) => openTaskDetailModalById(d.id),
+    'nav-task-detail':     (d) => navigateToTaskDetail(d.id),
+    'task-detail-back':    ()  => taskDetailBack(),
 };
 
 document.addEventListener('click', (e) => {

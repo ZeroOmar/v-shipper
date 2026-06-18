@@ -10,9 +10,28 @@ from app.services.task_queue import get_task_queue
 from app.validation import safe_join
 
 
+# tar exits 1 for a grab-bag of conditions. Some are harmless (a file changed
+# while being read, a socket was skipped); others mean files were silently
+# OMITTED from the archive (unreadable due to permissions, vanished mid-run),
+# which makes the backup incomplete and must be treated as a failure.
+_FATAL_TAR_STDERR_PATTERNS = (
+    "permission denied",
+    "cannot open",
+    "can't open",
+    "cannot stat",
+    "cannot read",
+    "could not open",
+    "could not stat",
+    "no such file or directory",
+    "operation not permitted",
+    "cannot access",
+    "error exit delayed",
+)
+
+
 class BackupService:
     """Service for managing volume backups."""
-    
+
     def __init__(self, config, volume_service):
         self.config = config
         self.volume_service = volume_service
@@ -101,6 +120,12 @@ class BackupService:
             
             # Create backup archive
             if not self._create_archive(task_id, source_path, archive_path):
+                # Drop the partial/incomplete archive so it can't be mistaken for a
+                # good backup or restored later.
+                try:
+                    Path(archive_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
                 error_msg = "Archive creation failed"
                 self.task_queue.complete_task(task_id, success=False, error=error_msg)
                 return False
@@ -169,9 +194,9 @@ class BackupService:
             _, stderr = process.communicate()
             return_code = process.returncode
 
-            if stderr.strip():
-                for line in stderr.strip().splitlines():
-                    print(f"[TASK:{task_id}] tar: {line.strip()}", flush=True)
+            stderr_lines = stderr.strip().splitlines() if stderr.strip() else []
+            for line in stderr_lines:
+                print(f"[TASK:{task_id}] tar: {line.strip()}", flush=True)
 
             if return_code == 0:
                 size_mb = Path(backup_path).stat().st_size / (1024 ** 2)
@@ -179,8 +204,19 @@ class BackupService:
                 return True
 
             if return_code == 1:
-                # Exit code 1 = non-fatal warnings (file changed, socket ignored, etc.)
-                # Archive was still written; verify it below
+                # Exit code 1 covers both benign warnings (file changed mid-read,
+                # socket ignored) and fatal ones where files were OMITTED from the
+                # archive. Treat the latter as a failure — a partial archive that
+                # silently dropped files is worse than an obvious error.
+                fatal = [
+                    line for line in stderr_lines
+                    if any(pat in line.lower() for pat in _FATAL_TAR_STDERR_PATTERNS)
+                ]
+                if fatal:
+                    print(f"[TASK:{task_id}] Archive incomplete — {len(fatal)} file(s) could not be read; backup failed", flush=True)
+                    return False
+
+                # Only benign warnings: archive should still be complete.
                 if Path(backup_path).exists() and Path(backup_path).stat().st_size > 0:
                     size_mb = Path(backup_path).stat().st_size / (1024 ** 2)
                     print(f"[TASK:{task_id}] Archive created with warnings (exit 1): {size_mb:.2f} MB", flush=True)

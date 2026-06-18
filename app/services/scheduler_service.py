@@ -203,6 +203,7 @@ class SchedulerService:
                     backup_pool=job['backup_pool'],
                     scheduled=True,
                     parent_job=job['name'],
+                    parent_task_id=summary_task_id,
                 )
                 try:
                     ok = self._backup_service.backup_volume(sub_task_id, pool_name, vol_name, job['backup_pool'])

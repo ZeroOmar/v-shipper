@@ -1094,6 +1094,56 @@ body.dark .log-line { color: #C8DCFF; }
   font-style: italic;
 }
 
+/* Back link inside a drilled-into task detail (e.g. schedule → volume backup) */
+.task-detail-back-btn {
+  margin-bottom: 14px;
+  padding: 4px 12px;
+  font-size: 13px;
+}
+
+/* Mini task list of a scheduled run's per-volume backups */
+.subtask-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.subtask-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--md-surface-container-highest);
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--md-r-md);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.subtask-item:hover {
+  background: var(--md-surface-container-high);
+  border-color: var(--md-primary);
+}
+.subtask-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.subtask-main .task-status { margin-bottom: 0; flex: 0 0 auto; }
+.subtask-target {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--md-on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subtask-meta {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--md-on-surface-variant);
+}
+
 /* ── Conflict Resolution Modal ──────────────────────────────── */
 .conflict-desc {
   font-size: 14px;
