@@ -5,6 +5,7 @@ import base64
 import yaml
 from pathlib import Path
 from typing import Optional
+from pydantic import ValidationError
 from app.models import AppConfig, DockerHost, BackupPool, WebUIConfig
 
 
@@ -30,7 +31,9 @@ class ConfigManager:
             
             # Parse docker_hosts
             docker_hosts = []
-            for host_config in config_dict.get("docker_hosts", []):
+            for idx, host_config in enumerate(config_dict.get("docker_hosts", [])):
+                if "name" not in host_config or "pool" not in host_config:
+                    raise ValueError(f"docker_hosts[{idx}] is missing required 'name' or 'pool'")
                 host = DockerHost(
                     name=host_config["name"],
                     pool=host_config["pool"],
@@ -39,10 +42,12 @@ class ConfigManager:
                     rsync_module=host_config.get("rsync_module")
                 )
                 docker_hosts.append(host)
-            
+
             # Parse backup_pools
             backup_pools = []
-            for backup_config in config_dict.get("backup_pools", []):
+            for idx, backup_config in enumerate(config_dict.get("backup_pools", [])):
+                if "name" not in backup_config:
+                    raise ValueError(f"backup_pools[{idx}] is missing required 'name'")
                 backup = BackupPool(
                     name=backup_config["name"],
                     pool=backup_config.get("pool") or backup_config.get("path"),
@@ -82,9 +87,17 @@ class ConfigManager:
             return self.config
         
         except yaml.YAMLError as e:
-            raise ValueError(f"Failed to parse YAML configuration: {e}")
+            raise ValueError(f"Invalid VOLUME_MANAGER_CONFIG: failed to parse YAML — {e}")
+        except ValidationError as e:
+            # Summarize the first offending field for a clear startup message.
+            errs = e.errors()
+            if errs:
+                loc = ".".join(str(p) for p in errs[0].get("loc", ())) or "config"
+                msg = errs[0].get("msg", "invalid value")
+                raise ValueError(f"Invalid VOLUME_MANAGER_CONFIG: {loc} — {msg}")
+            raise ValueError(f"Invalid VOLUME_MANAGER_CONFIG: {e}")
         except Exception as e:
-            raise ValueError(f"Configuration loading error: {e}")
+            raise ValueError(f"Invalid VOLUME_MANAGER_CONFIG: {e}")
     
     def _save_config_to_file(self):
         """Save configuration to /tmp/config.yaml for debugging."""

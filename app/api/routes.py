@@ -20,6 +20,24 @@ from app.services.task_queue import get_task_queue
 from app.services.scheduler_service import get_scheduler_service
 from app.services.notification_service import get_notification_service
 from app.config import validate_auth, get_config
+from app.validation import validate_name
+
+
+def _validate_param(value: str, field: str) -> str:
+    """Validate a path/query-param name, mapping failures to HTTP 400."""
+    try:
+        return validate_name(value, field)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+def _validate_task_id(task_id: str) -> str:
+    """Task ids are server-generated UUIDs; reject anything else."""
+    try:
+        uuid.UUID(str(task_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=400, detail="invalid task_id")
+    return task_id
 
 router = APIRouter()
 
@@ -155,12 +173,15 @@ async def list_pools(session: dict = Depends(require_auth)):
 async def list_volumes(pool: str, session: dict = Depends(require_auth)):
     """List volumes in a pool."""
     try:
+        pool = _validate_param(pool, "pool")
         config = get_config()
         volume_service = get_volume_service(config)
-        
+
         volumes, warnings = volume_service.list_volumes(pool)
         return VolumesListResponse(pool=pool, volumes=volumes, warnings=warnings)
-    
+
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[ERROR] Failed to list volumes: {e}", flush=True)
         raise HTTPException(status_code=400, detail=str(e))
@@ -170,9 +191,11 @@ async def list_volumes(pool: str, session: dict = Depends(require_auth)):
 async def get_volume(pool: str, volume_name: str, session: dict = Depends(require_auth)):
     """Get detailed information about a volume."""
     try:
+        pool = _validate_param(pool, "pool")
+        volume_name = _validate_param(volume_name, "volume_name")
         config = get_config()
         volume_service = get_volume_service(config)
-        
+
         detail = volume_service.get_volume_detail(pool, volume_name)
         if not detail:
             raise HTTPException(status_code=404, detail="Volume not found")
@@ -299,10 +322,27 @@ async def create_volume(request: VolumeCreateRequest, session: dict = Depends(re
     try:
         config = get_config()
         volume_service = get_volume_service(config)
-        success = volume_service.create_volume(request.pool, request.volume_name)
-        if not success:
-            raise HTTPException(status_code=400, detail="Failed to create volume — it may already exist or the pool is remote")
-        return {"status": "created"}
+        task_queue = get_task_queue()
+
+        task_id = task_queue.add_task(
+            task_type="create",
+            pool=request.pool,
+            volume_name=request.volume_name,
+        )
+        task_queue.start_task(task_id)
+
+        def _create():
+            try:
+                success = volume_service.create_volume(request.pool, request.volume_name)
+                if not success:
+                    task_queue.complete_task(task_id, success=False, error="Failed to create volume — it may already exist or the pool is remote")
+                else:
+                    task_queue.complete_task(task_id, success=True)
+            except Exception as exc:
+                task_queue.complete_task(task_id, success=False, error=str(exc))
+
+        threading.Thread(target=_create, daemon=True).start()
+        return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type="create")
     except HTTPException:
         raise
     except Exception as e:
@@ -316,23 +356,29 @@ async def rename_volume(request: RenameRequest, session: dict = Depends(require_
     try:
         config = get_config()
         volume_service = get_volume_service(config)
-        
-        success = volume_service.rename_volume(request.pool, request.old_name, request.new_name)
+        task_queue = get_task_queue()
 
-        if not success:
-            raise HTTPException(status_code=400, detail="Failed to rename volume")
+        task_id = task_queue.add_task(
+            task_type="rename",
+            pool=request.pool,
+            volume_name=request.old_name,
+            new_name=request.new_name,
+        )
+        task_queue.start_task(task_id)
 
-        svc = get_notification_service()
-        if svc:
-            import threading
-            threading.Thread(
-                target=svc.notify_operation,
-                args=["rename", {"volume": request.old_name, "new_name": request.new_name, "pool": request.pool}],
-                daemon=True,
-            ).start()
+        def _rename():
+            try:
+                success = volume_service.rename_volume(request.pool, request.old_name, request.new_name)
+                if not success:
+                    task_queue.complete_task(task_id, success=False, error="Failed to rename volume")
+                else:
+                    task_queue.complete_task(task_id, success=True)
+            except Exception as exc:
+                task_queue.complete_task(task_id, success=False, error=str(exc))
 
-        return {"status": "ok", "message": "Volume renamed"}
-    
+        threading.Thread(target=_rename, daemon=True).start()
+        return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type="rename")
+
     except HTTPException:
         raise
     except Exception as e:
@@ -541,6 +587,7 @@ async def cleanup_debug(session: dict = Depends(require_auth)):
 async def get_task_progress(task_id: str, session: dict = Depends(require_auth)):
     """Get task progress."""
     try:
+        task_id = _validate_task_id(task_id)
         task_queue = get_task_queue()
         task = task_queue.get_task(task_id)
         
@@ -571,6 +618,7 @@ async def get_task_progress(task_id: str, session: dict = Depends(require_auth))
 @router.get("/api/task/{task_id}/logs")
 async def get_task_logs(task_id: str, session: dict = Depends(require_auth)):
     """Get captured log lines for a task."""
+    task_id = _validate_task_id(task_id)
     config = get_config()
     tmp_dir = str(config.tmp_dir) if config.tmp_dir else "/tmp"
     task_queue = get_task_queue(tmp_dir=tmp_dir)
@@ -605,11 +653,7 @@ async def list_schedules(session: dict = Depends(require_auth)):
 @router.post("/api/schedules", response_model=BackupSchedule)
 async def create_schedule(body: BackupScheduleCreate, session: dict = Depends(require_auth)):
     """Create a new backup schedule job."""
-    from apscheduler.triggers.cron import CronTrigger
-    try:
-        CronTrigger.from_crontab(body.cron, timezone='UTC')
-    except Exception:
-        raise HTTPException(status_code=422, detail=f"Invalid cron expression: {body.cron!r}")
+    # cron is validated by BackupScheduleCreate at the model layer.
     svc = get_scheduler_service()
     job = svc.create_job({
         'name': body.name,
@@ -624,11 +668,7 @@ async def create_schedule(body: BackupScheduleCreate, session: dict = Depends(re
 @router.put("/api/schedules/{job_id}", response_model=BackupSchedule)
 async def update_schedule(job_id: str, body: BackupScheduleCreate, session: dict = Depends(require_auth)):
     """Update an existing backup schedule job."""
-    from apscheduler.triggers.cron import CronTrigger
-    try:
-        CronTrigger.from_crontab(body.cron, timezone='UTC')
-    except Exception:
-        raise HTTPException(status_code=422, detail=f"Invalid cron expression: {body.cron!r}")
+    # cron is validated by BackupScheduleCreate at the model layer.
     svc = get_scheduler_service()
     job = svc.update_job(job_id, {
         'name': body.name,

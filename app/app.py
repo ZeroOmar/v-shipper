@@ -2,10 +2,12 @@
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pathlib import Path
 import shutil
+import traceback
 
 from app.config import load_config
 from app.services.task_queue import get_task_queue
@@ -52,7 +54,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="v-shipper",
     description="Docker Volume Migration Application",
-    version="0.0.8",
+    version="0.2.0",
     lifespan=lifespan
 )
 
@@ -67,6 +69,26 @@ else:
 
 # Include API routes
 app.include_router(router)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Return a concise 422 for invalid request bodies (no internal details leaked)."""
+    errors = []
+    for err in exc.errors():
+        loc = ".".join(str(p) for p in err.get("loc", ()) if p != "body")
+        errors.append(f"{loc}: {err.get('msg', 'invalid value')}" if loc else err.get("msg", "invalid value"))
+    detail = "; ".join(errors) or "Invalid request"
+    print(f"[VALIDATION] {request.method} {request.url.path} — {detail}", flush=True)
+    return JSONResponse(status_code=422, content={"detail": detail})
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Catch-all so an unexpected error never crashes the worker or leaks a traceback."""
+    print(f"[ERROR] Unhandled on {request.method} {request.url.path}: {exc}", flush=True)
+    traceback.print_exc()
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 # Serve index.html on root path

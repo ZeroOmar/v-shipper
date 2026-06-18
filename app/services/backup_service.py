@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Optional
 from app.services.task_queue import get_task_queue
+from app.validation import safe_join
 
 
 class BackupService:
@@ -62,10 +63,10 @@ class BackupService:
                     self.task_queue.complete_task(task_id, success=False, error=error_msg)
                     return False
 
-                source_path = str(remote_source_staging / source_volume_name)
+                source_path = str(safe_join(remote_source_staging, source_volume_name))
                 print(f"[TASK:{task_id}] Pulled remote volume to {source_path}", flush=True)
             else:
-                source_path = f"{source_pool['path']}/{source_volume_name}"
+                source_path = str(safe_join(source_pool['path'], source_volume_name))
 
             if not Path(source_path).exists():
                 error_msg = f"Source volume '{source_volume_name}' not found in pool '{source_pool_name}' — it may have been deleted"
@@ -260,7 +261,7 @@ class BackupService:
                     return False
                 print(f"[TASK:{task_id}] Download complete: {backup_path}", flush=True)
             else:
-                backup_path = Path(backup_pool['path']) / backup_file
+                backup_path = safe_join(backup_pool['path'], backup_file)
 
             if not backup_path.exists():
                 self.task_queue.complete_task(task_id, success=False, error="Backup file not found")
@@ -279,7 +280,7 @@ class BackupService:
                 if temp_extract_dir.exists():
                     shutil.rmtree(temp_extract_dir)
                 temp_extract_dir.mkdir(parents=True, exist_ok=True)
-                dest_path = Path(dest_pool['path']) / dest_volume_name
+                dest_path = safe_join(dest_pool['path'], dest_volume_name)
                 if conflict_resolution == 'overwrite' and dest_path.exists():
                     shutil.rmtree(dest_path)
 

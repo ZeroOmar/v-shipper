@@ -645,6 +645,8 @@ input[type="checkbox"] {
 .task-type-pill.type-migrate          { background: var(--md-warn-container);      color: var(--md-on-warn-container); }
 .task-type-pill.type-restore          { background: var(--md-success-container);   color: var(--md-on-success-container); }
 .task-type-pill.type-delete           { background: var(--md-error-container);     color: var(--md-on-error-container); }
+.task-type-pill.type-rename           { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
+.task-type-pill.type-create           { background: var(--md-success-container);   color: var(--md-on-success-container); }
 
 .progress-text {
   font-size: 12px;

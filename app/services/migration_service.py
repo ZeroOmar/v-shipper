@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Optional
 from app.services.task_queue import get_task_queue
+from app.validation import safe_join
 
 
 class MigrationService:
@@ -42,14 +43,14 @@ class MigrationService:
                     source_pool, source_volume_name, trailing_slash=True
                 )
             else:
-                source_path = f"{source_pool['path']}/{source_volume_name}/"
+                source_path = str(safe_join(source_pool['path'], source_volume_name)) + "/"
 
             if dest_pool.get("pool_type") == "remote":
                 dest_path = self.volume_service._build_rsync_target(
                     dest_pool, effective_dest, trailing_slash=False
                 )
             else:
-                dest_path = f"{dest_pool['path']}/{effective_dest}"
+                dest_path = str(safe_join(dest_pool['path'], effective_dest))
 
             # Update progress
             self.task_queue.update_progress(task_id, {

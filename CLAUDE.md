@@ -34,6 +34,7 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 | `app/templates/index.html` | SPA shell |
 | `app/static/main.js` | All client logic — polling, modals, progress |
 | `app/static/style.css` | Styling |
+| `app/validation.py` | Shared input validators — names, paths, `safe_join`, cron, notification fields |
 | `run_dev.sh` | Dev server launcher (includes real config) |
 
 ## Architecture patterns
@@ -48,11 +49,18 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 
 ## Adding a new operation
 
-1. Model in `app/models.py`
-2. Service logic in `app/services/`
-3. Endpoint in `app/api/routes.py` (follow auth pattern: check `session.get("authenticated")`)
-4. HTML/JS in `index.html` + `main.js` (follow modal + poll pattern)
+1. Model in `app/models.py` — add `field_validator`s using the helpers in `app/validation.py` (`validate_name`, `validate_backup_file`, etc.)
+2. Service logic in `app/services/` — build any filesystem paths with `safe_join` from `app/validation.py`
+3. Endpoint in `app/api/routes.py` (follow auth pattern: check `session.get("authenticated")`; validate path/query params via `_validate_param` / `_validate_task_id`)
+4. HTML/JS in `index.html` + `main.js` (modal + poll pattern; wire buttons via `data-action` + the delegated listener, never inline `onclick` with interpolated user data; escape names with `escapeHtml`)
 5. Lock the volume, update progress, clean up in finally
+
+## Input validation & safety
+
+- **All inputs validated at the boundary** — request models, path/query params, and `VOLUME_MANAGER_CONFIG` (at startup) go through `app/validation.py`. Names are strict Docker-style (`[A-Za-z0-9][A-Za-z0-9_.-]`, ≤255, no `/` or `..`)
+- **Path containment** — `safe_join(base, *parts)` resolves and asserts the result stays inside `base`; use it instead of f-string path building
+- **Errors never crash the app** — global handlers in `app.py` return generic 500s (no traceback leak) and concise 422s; background-thread work is wrapped so a bad input marks the task failed
+- **Frontend** — user-controlled strings are HTML-escaped and actions dispatched via `data-action` attributes, not interpolated `onclick`
 
 ## Config structure
 
@@ -83,5 +91,4 @@ web_ui:
 
 - Frontend JS in `main.js` is long and procedural — no modules, no component abstraction
 - No tests exist despite `tests/` stubs referenced in older docs
-- No input validation on volume/pool names (path traversal risk at boundaries)
 - Per-task log buffer is in-memory only — logs are lost on server restart

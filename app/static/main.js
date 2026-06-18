@@ -18,6 +18,10 @@ const POLL_INTERVAL = 2000; // 2 seconds
 const AUTO_REFRESH_INTERVAL = 30000; // 30 seconds
 const MAX_TASK_HISTORY = 1000; // Keep last 1000 tasks
 const TASKS_PER_PAGE = 100;
+
+// Volume/pool name rules — mirror app/validation.py NAME_RE (server is authoritative).
+const VOLUME_NAME_PATTERN = '[A-Za-z0-9][A-Za-z0-9_.-]{0,254}';
+const VOLUME_NAME_TITLE = 'Letters, digits, "_", ".", "-"; must start with a letter or digit; no spaces or slashes.';
 const MAX_LOAD_FAILURES = 3; // Logout after 3 consecutive failures
 
 // ============ Utilities ============
@@ -206,9 +210,9 @@ function displayPools(pools) {
             ? `<div class="pool-unreachable">⚠ Unreachable</div>` : '';
 
         poolEl.innerHTML = `
-            <div style="cursor: pointer;" onclick="selectPool('${pool.name}')">
-                <div class="pool-name">${pool.name}</div>
-                <div class="pool-type">${pool.role === 'backup' ? 'Backup' : 'Docker'} · ${pool.pool_type}</div>
+            <div style="cursor: pointer;" data-action="select-pool" data-pool="${escapeHtml(pool.name)}">
+                <div class="pool-name">${escapeHtml(pool.name)}</div>
+                <div class="pool-type">${pool.role === 'backup' ? 'Backup' : 'Docker'} · ${escapeHtml(pool.pool_type)}</div>
                 <div class="pool-counts">${countLabel}</div>
                 ${reachableHtml}
                 <div class="pool-stats" style="margin-top: 8px;">${statsHtml}</div>
@@ -280,11 +284,11 @@ function displayVolumes(poolName, volumes, warnings = []) {
     }
 
     let html = `<div class="volumes-header">
-        <h2>${poolName}</h2>
-        ${isLocalDocker ? `<button class="btn tonal" onclick="openCreateVolumeModal('${poolName}')">+ New Volume</button>` : ''}
+        <h2>${escapeHtml(poolName)}</h2>
+        ${isLocalDocker ? `<button class="btn tonal" data-action="open-create-volume" data-pool="${escapeHtml(poolName)}">+ New Volume</button>` : ''}
     </div>`;
     if (warnings.length > 0) {
-        html += `<div class="warning-banner">${warnings.map(w => `<div>${w}</div>`).join('')}</div>`;
+        html += `<div class="warning-banner">${warnings.map(w => `<div>${escapeHtml(w)}</div>`).join('')}</div>`;
     }
 
     if (volumes.length === 0) {
@@ -298,20 +302,21 @@ function displayVolumes(poolName, volumes, warnings = []) {
             const backupCount = volume.backups && volume.backups.length > 0 ? volume.backups.length : 0;
             const backupLabel = backupCount ? ` · ${backupCount} backup${backupCount !== 1 ? 's' : ''}` : '';
 
+            const volAttrs = `data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(volume.name)}"`;
             html += `
                 <div class="volume-item">
                     <div class="volume-info">
-                        <div class="volume-name">${volume.name}</div>
+                        <div class="volume-name">${escapeHtml(volume.name)}</div>
                         <div class="volume-details">
                             <span class="volume-size">${sizeText}</span>
                             <span class="volume-meta">Created: ${created}${backupLabel}</span>
                         </div>
                     </div>
                     <div class="volume-actions">
-                        <button class="btn vol-btn" onclick="openMigrateModal('${poolName}', '${volume.name}')">Migrate</button>
-                        <button class="btn vol-btn" onclick="openBackupModal('${poolName}', '${volume.name}')">Backup</button>
-                        ${isLocalDocker ? `<button class="btn tonal vol-btn" onclick="openRenameVolumeModal('${poolName}', '${volume.name}')">Rename</button>` : ''}
-                        <button class="btn danger vol-btn" onclick="openDeleteModal('${poolName}', '${volume.name}')">Delete</button>
+                        <button class="btn vol-btn" data-action="open-migrate" ${volAttrs}>Migrate</button>
+                        <button class="btn vol-btn" data-action="open-backup" ${volAttrs}>Backup</button>
+                        ${isLocalDocker ? `<button class="btn tonal vol-btn" data-action="open-rename" ${volAttrs}>Rename</button>` : ''}
+                        <button class="btn danger vol-btn" data-action="open-delete" ${volAttrs}>Delete</button>
                     </div>
                 </div>
             `;
@@ -384,8 +389,8 @@ function displayBackupPool(poolName, archives, warnings = []) {
                     <div class="backup-item-meta">${dt} · ${size}</div>
                 </div>
                 <div style="display:flex;gap:6px;">
-                    <button class="btn vol-btn" onclick="openRestoreModal('${poolName}', '${a.name}')">Restore</button>
-                    <button class="btn danger vol-btn" onclick="openDeleteModal('${poolName}', '${a.name}')">Delete</button>
+                    <button class="btn vol-btn" data-action="open-restore" data-pool="${escapeHtml(poolName)}" data-file="${escapeHtml(a.name)}">Restore</button>
+                    <button class="btn danger vol-btn" data-action="open-delete" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(a.name)}">Delete</button>
                 </div>
             </div>`;
         });
@@ -404,8 +409,8 @@ function displayBackupPool(poolName, archives, warnings = []) {
                     <div class="backup-item-meta">${size}</div>
                 </div>
                 <div style="display:flex;gap:6px;">
-                    <button class="btn vol-btn" onclick="openRestoreModal('${poolName}', '${a.name}')">Restore</button>
-                    <button class="btn danger vol-btn" onclick="openDeleteModal('${poolName}', '${a.name}')">Delete</button>
+                    <button class="btn vol-btn" data-action="open-restore" data-pool="${escapeHtml(poolName)}" data-file="${escapeHtml(a.name)}">Restore</button>
+                    <button class="btn danger vol-btn" data-action="open-delete" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(a.name)}">Delete</button>
                 </div>
             </div>`;
         });
@@ -431,9 +436,9 @@ function openCreateVolumeModal(poolName) {
             </div>
             <div class="form-group">
                 <label>Volume Name</label>
-                <input type="text" id="newVolumeName" placeholder="my-volume" autofocus>
+                <input type="text" id="newVolumeName" placeholder="my-volume" maxlength="255" pattern="${VOLUME_NAME_PATTERN}" title="${VOLUME_NAME_TITLE}" autofocus>
             </div>
-            <button class="btn success" style="width:100%;" onclick="createVolume('${poolName}')">Create</button>
+            <button class="btn success" style="width:100%;" data-action="create-volume" data-pool="${escapeHtml(poolName)}">Create</button>
         </div>`;
     openModal('migrateModal');
     document.getElementById('newVolumeName')?.focus();
@@ -451,8 +456,8 @@ async function createVolume(poolName) {
         const data = await res.json();
         if (res.ok) {
             closeModal('migrateModal');
-            showSuccess(`Volume '${name}' created`);
             loadVolumesForPool(poolName);
+            showTaskProgress(data.task_id);
         } else {
             showError(data.detail || 'Failed to create volume');
         }
@@ -479,9 +484,9 @@ function openRenameVolumeModal(poolName, volumeName) {
             </div>
             <div class="form-group">
                 <label>New Name</label>
-                <input type="text" id="renameVolumeName" value="${escapeHtml(volumeName)}" autofocus>
+                <input type="text" id="renameVolumeName" value="${escapeHtml(volumeName)}" maxlength="255" pattern="${VOLUME_NAME_PATTERN}" title="${VOLUME_NAME_TITLE}" autofocus>
             </div>
-            <button class="btn success" style="width:100%;" onclick="renameVolume('${poolName}', '${volumeName}')">Rename</button>
+            <button class="btn success" style="width:100%;" data-action="rename-volume" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(volumeName)}">Rename</button>
         </div>`;
     openModal('migrateModal');
     const inp = document.getElementById('renameVolumeName');
@@ -501,8 +506,8 @@ async function renameVolume(poolName, oldName) {
         const data = await res.json();
         if (res.ok) {
             closeModal('migrateModal');
-            showSuccess(`Renamed '${oldName}' → '${newName}'`);
             loadVolumesForPool(poolName);
+            showTaskProgress(data.task_id);
         } else {
             showError(data.detail || 'Failed to rename volume');
         }
@@ -560,11 +565,11 @@ function openMigrateModal(sourcePool, sourceVolume) {
         </div>
         <div class="form-group">
             <label>Source Pool</label>
-            <input type="text" value="${sourcePool}" disabled>
+            <input type="text" value="${escapeHtml(sourcePool)}" disabled>
         </div>
         <div class="form-group">
             <label>Source Volume</label>
-            <input type="text" value="${sourceVolume}" disabled>
+            <input type="text" value="${escapeHtml(sourceVolume)}" disabled>
         </div>
         <div class="form-group">
             <label>Destination Pool</label>
@@ -584,7 +589,7 @@ function openMigrateModal(sourcePool, sourceVolume) {
                 <span>Delete source after verification</span>
             </label>
         </div>
-        <button class="btn success" style="width: 100%;" onclick="startMigration('${sourcePool}', '${sourceVolume}')">Start Migration</button>
+        <button class="btn success" style="width: 100%;" data-action="start-migration" data-pool="${escapeHtml(sourcePool)}" data-vol="${escapeHtml(sourceVolume)}">Start Migration</button>
     `;
     
     // Load pools for destination
@@ -656,11 +661,11 @@ function openBackupModal(sourcePool, sourceVolume) {
         </div>
         <div class="form-group">
             <label>Source Pool</label>
-            <input type="text" value="${sourcePool}" disabled>
+            <input type="text" value="${escapeHtml(sourcePool)}" disabled>
         </div>
         <div class="form-group">
             <label>Source Volume</label>
-            <input type="text" value="${sourceVolume}" disabled>
+            <input type="text" value="${escapeHtml(sourceVolume)}" disabled>
         </div>
         <div class="form-group">
             <label>Backup Pool</label>
@@ -674,7 +679,7 @@ function openBackupModal(sourcePool, sourceVolume) {
                 <span>Verify backup</span>
             </label>
         </div>
-        <button class="btn success" style="width: 100%;" onclick="startBackup('${sourcePool}', '${sourceVolume}')">Start Backup</button>
+        <button class="btn success" style="width: 100%;" data-action="start-backup" data-pool="${escapeHtml(sourcePool)}" data-vol="${escapeHtml(sourceVolume)}">Start Backup</button>
     `;
     
     // Load backup pools
@@ -729,11 +734,11 @@ function openRestoreModal(backupPool, backupFile) {
         </div>
         <div class="form-group">
             <label>Backup Pool</label>
-            <input type="text" value="${backupPool}" disabled>
+            <input type="text" value="${escapeHtml(backupPool)}" disabled>
         </div>
         <div class="form-group">
             <label>Backup File</label>
-            <input type="text" value="${backupFile}" disabled>
+            <input type="text" value="${escapeHtml(backupFile)}" disabled>
         </div>
         <div class="form-group">
             <label>Destination Pool</label>
@@ -743,9 +748,9 @@ function openRestoreModal(backupPool, backupFile) {
         </div>
         <div class="form-group">
             <label>Volume Name</label>
-            <input type="text" id="restoreVolumeName" value="${defaultVolume}" required>
+            <input type="text" id="restoreVolumeName" value="${escapeHtml(defaultVolume)}" maxlength="255" pattern="${VOLUME_NAME_PATTERN}" title="${VOLUME_NAME_TITLE}" required>
         </div>
-        <button class="btn success" style="width: 100%;" onclick="startRestore('${backupPool}', '${backupFile}')">Start Restore</button>
+        <button class="btn success" style="width: 100%;" data-action="start-restore" data-pool="${escapeHtml(backupPool)}" data-file="${escapeHtml(backupFile)}">Start Restore</button>
     `;
 
     loadPoolsForSelect('restorePool');
@@ -821,17 +826,17 @@ function openDeleteModal(pool, volume) {
         <p><strong>Warning:</strong> This action cannot be undone. Make sure you have a backup if needed.</p>
         <div class="form-group">
             <label>Pool</label>
-            <input type="text" value="${pool}" disabled>
+            <input type="text" value="${escapeHtml(pool)}" disabled>
         </div>
         <div class="form-group">
             <label>Volume</label>
-            <input type="text" value="${volume}" disabled>
+            <input type="text" value="${escapeHtml(volume)}" disabled>
         </div>
         <label class="checkbox-label">
             <input type="checkbox" id="deleteConfirm">
             <span>Yes, I want to delete this volume</span>
         </label>
-        <button class="btn danger" id="confirmDeleteButton" style="width: 100%; margin-top: 15px;" onclick="confirmDelete('${pool}', '${volume}')">Delete</button>
+        <button class="btn danger" id="confirmDeleteButton" style="width: 100%; margin-top: 15px;" data-action="confirm-delete" data-pool="${escapeHtml(pool)}" data-vol="${escapeHtml(volume)}">Delete</button>
     `;
     
     openModal('deleteModal');
@@ -1021,6 +1026,17 @@ function getTaskTargetLabel(task) {
         }
         return 'Restore task';
     }
+    if (task.task_type === 'rename') {
+        const pool = params.pool || '';
+        const vol = params.volume_name || '';
+        const newName = params.new_name || '';
+        return pool ? `${pool}/${vol} → ${newName}` : `${vol} → ${newName}`;
+    }
+    if (task.task_type === 'create') {
+        const pool = params.pool || '';
+        const vol = params.volume_name || '';
+        return pool && vol ? `${pool}/${vol}` : (vol || 'Create volume');
+    }
     return params.source_volume || params.volume_name || params.backup_file || task.current_operation || 'Task';
 }
 
@@ -1040,7 +1056,7 @@ function renderTaskHistory() {
         const targetLabel = getTaskTargetLabel(task);
         const typeClass = (task.task_type || 'operation').replace(/[^a-z0-9_]/gi, '_');
         return `
-            <div class="task-history-item" onclick="openTaskDetailModalById('${task.task_id}')" title="Click for details">
+            <div class="task-history-item" data-action="open-task-detail" data-id="${escapeHtml(task.task_id)}" title="Click for details">
                 <div class="task-card-pills">
                     <div class="task-type-pill type-${typeClass}">${getTaskTypeDisplay(task.task_type)}</div>
                     <div class="task-status ${task.status}">${task.status.toUpperCase()}</div>
@@ -1365,10 +1381,10 @@ function renderScheduleList(schedules) {
                 <div class="schedule-next-run">Next run: ${nextRun}</div>
             </div>
             <div class="schedule-row-actions">
-                <span class="schedule-enabled-chip ${enabledClass}" onclick="toggleSchedule('${job.id}')">${enabledLabel}</span>
-                <button class="btn tonal" onclick="runScheduleNow('${job.id}')">▶ Run</button>
-                <button class="btn tonal" onclick="openScheduleForm('${job.id}')">Edit</button>
-                <button class="btn danger" onclick="deleteSchedule('${job.id}')">Delete</button>
+                <span class="schedule-enabled-chip ${enabledClass}" data-action="toggle-schedule" data-id="${escapeHtml(job.id)}">${enabledLabel}</span>
+                <button class="btn tonal" data-action="run-schedule" data-id="${escapeHtml(job.id)}">▶ Run</button>
+                <button class="btn tonal" data-action="edit-schedule" data-id="${escapeHtml(job.id)}">Edit</button>
+                <button class="btn danger" data-action="delete-schedule" data-id="${escapeHtml(job.id)}">Delete</button>
             </div>
         </div>`;
     }).join('');
@@ -1457,10 +1473,10 @@ async function openScheduleForm(jobId = null) {
         ${missingWarning}
         <div class="schedule-form">
             <label>Name
-                <input type="text" id="sfName" value="${escapeHtml(job?.name || '')}" placeholder="e.g. Nightly Production Backup">
+                <input type="text" id="sfName" value="${escapeHtml(job?.name || '')}" maxlength="255" pattern="${VOLUME_NAME_PATTERN}" title="${VOLUME_NAME_TITLE}" placeholder="e.g. Nightly_Production_Backup">
             </label>
             <label>Cron Expression
-                <input type="text" id="sfCron" value="${escapeHtml(job?.cron || '0 2 * * *')}" placeholder="0 2 * * *">
+                <input type="text" id="sfCron" value="${escapeHtml(job?.cron || '0 2 * * *')}" maxlength="120" placeholder="0 2 * * *">
                 <div class="cron-examples">
                     ${cronExamples.map(e => `<span class="cron-chip" onclick="document.getElementById('sfCron').value='${e.value}'">${e.label} <code>${e.value}</code></span>`).join('')}
                 </div>
@@ -1480,7 +1496,7 @@ async function openScheduleForm(jobId = null) {
                 </div>
             </label>
             <div class="schedule-form-actions">
-                <button class="btn success" onclick="saveSchedule(${jobId ? `'${jobId}'` : 'null'})">Save</button>
+                <button class="btn success" data-action="save-schedule"${jobId ? ` data-id="${escapeHtml(jobId)}"` : ''}>Save</button>
                 <button class="btn tonal" onclick="showSettingsSection('schedules')">Cancel</button>
             </div>
         </div>`;
@@ -1586,14 +1602,19 @@ const NOTIFICATION_TOPICS = [
     { id: 'restore',  label: 'Restore',           desc: 'When a backup restore completes' },
     { id: 'delete',   label: 'Delete',            desc: 'When a volume is deleted' },
     { id: 'rename',   label: 'Rename',            desc: 'When a volume is renamed' },
+    { id: 'create',   label: 'Create',            desc: 'When a new volume is created' },
 ];
 
 const NOTIFICATION_DEFAULT_TEMPLATE = [
     '\u{1F514} *{task_type_label}* {status_emoji}',
-    '\u{1F4E6} Volume: `{volume}` on `{pool}`',
-    'Status: {status}',
-    '⏱ Duration: {elapsed}s',
-    '\u{1F552} {timestamp}',
+    '`{target}`',
+    '',
+    'Status: *{status}*',
+    '⏱ {elapsed}s',
+    '⏱ Started: {started_at}',
+    '\u{1F3C1} Finished: {timestamp}',
+    '\u{1F5A5} Host: {hostname}',
+    '{params_block}',
     '{error_block}',
 ].join('\n');
 
@@ -1639,10 +1660,10 @@ function renderNotificationList(configs) {
                 <div style="margin-top:4px;">${topicChips}</div>
             </div>
             <div class="notification-row-actions">
-                <span class="schedule-enabled-chip ${enabledClass}" onclick="toggleNotification('${cfg.id}')">${enabledLabel}</span>
-                <button class="btn tonal" onclick="testNotification('${cfg.id}')">Test</button>
-                <button class="btn tonal" onclick="openNotificationForm('${cfg.id}')">Edit</button>
-                <button class="btn danger" onclick="deleteNotification('${cfg.id}')">Delete</button>
+                <span class="schedule-enabled-chip ${enabledClass}" data-action="toggle-notification" data-id="${escapeHtml(cfg.id)}">${enabledLabel}</span>
+                <button class="btn tonal" data-action="test-notification" data-id="${escapeHtml(cfg.id)}">Test</button>
+                <button class="btn tonal" data-action="edit-notification" data-id="${escapeHtml(cfg.id)}">Edit</button>
+                <button class="btn danger" data-action="delete-notification" data-id="${escapeHtml(cfg.id)}">Delete</button>
             </div>
         </div>`;
     }).join('');
@@ -1675,18 +1696,18 @@ async function openNotificationForm(cfgId = null) {
         </div>
         <div class="notification-form">
             <label>Name
-                <input type="text" id="nfName" value="${escapeHtml(cfg?.name || '')}" placeholder="e.g. Homelab Alerts">
+                <input type="text" id="nfName" value="${escapeHtml(cfg?.name || '')}" maxlength="255" pattern="${VOLUME_NAME_PATTERN}" title="${VOLUME_NAME_TITLE}" placeholder="e.g. Homelab_Alerts">
             </label>
             <label>Bot Token
-                <input type="password" id="nfToken" value="${escapeHtml(cfg?.token || '')}" placeholder="1234567890:ABC...">
+                <input type="password" id="nfToken" value="${escapeHtml(cfg?.token || '')}" maxlength="1024" placeholder="1234567890:ABC...">
                 <span class="field-hint">Create a bot via @BotFather on Telegram.</span>
             </label>
             <label>Chat ID
-                <input type="text" id="nfChatId" value="${escapeHtml(cfg?.chat_id || '')}" placeholder="-1001234567890">
+                <input type="text" id="nfChatId" value="${escapeHtml(cfg?.chat_id || '')}" maxlength="64" pattern="-?\\d+|@\\w{4,}" title="A numeric chat id (optionally negative) or @username" placeholder="-1001234567890">
                 <span class="field-hint">Your chat or group ID. Use @userinfobot to find it.</span>
             </label>
             <label>Message Thread ID <span style="font-weight:400;font-size:11px;color:var(--md-on-surface-variant)">(optional — for topic groups)</span>
-                <input type="text" id="nfThreadId" value="${escapeHtml(cfg?.message_thread_id || '')}" placeholder="">
+                <input type="text" id="nfThreadId" value="${escapeHtml(cfg?.message_thread_id || '')}" inputmode="numeric" pattern="\\d*" maxlength="32" title="Numeric thread id" placeholder="">
             </label>
             <label>Notification Topics
                 <div class="notification-topics" id="nfTopics">${topicsHtml}</div>
@@ -1696,14 +1717,14 @@ async function openNotificationForm(cfgId = null) {
                 <span>Notify on failed tasks only</span>
             </label>
             <label>Server URL <span style="font-weight:400;font-size:11px;color:var(--md-on-surface-variant)">(optional — for self-hosted Bot API)</span>
-                <input type="text" id="nfServerUrl" value="${escapeHtml(cfg?.server_url || '')}" placeholder="https://api.telegram.org">
+                <input type="url" id="nfServerUrl" value="${escapeHtml(cfg?.server_url || '')}" maxlength="4096" placeholder="https://api.telegram.org">
             </label>
             <label>Message Template <span style="font-weight:400;font-size:11px;color:var(--md-on-surface-variant)">(optional — leave blank for default)</span>
-                <textarea id="nfTemplate" placeholder="${escapeHtml(NOTIFICATION_DEFAULT_TEMPLATE)}">${escapeHtml(cfg?.message_template || '')}</textarea>
-                <span class="field-hint">Variables: {task_type_label} {status} {status_emoji} {volume} {pool} {elapsed} {timestamp} {error} {error_block} {job_name} {hostname}</span>
+                <textarea id="nfTemplate" maxlength="4096" placeholder="${escapeHtml(NOTIFICATION_DEFAULT_TEMPLATE)}">${escapeHtml(cfg?.message_template || '')}</textarea>
+                <span class="field-hint">Variables: {task_type_label} {task_type} {status} {status_emoji} {target} {params_block} {elapsed} {started_at} {timestamp} {current_operation} {error} {error_block} {task_id} {hostname} — and individual param aliases: {volume} {pool} {source_volume} {source_pool} {dest_volume} {dest_pool} {backup_pool} {backup_file} {job_name}</span>
             </label>
             <div class="notification-form-actions">
-                <button class="btn success" onclick="saveNotification(${cfgId ? `'${cfgId}'` : 'null'})">Save</button>
+                <button class="btn success" data-action="save-notification"${cfgId ? ` data-id="${escapeHtml(cfgId)}"` : ''}>Save</button>
                 <button class="btn tonal" onclick="showSettingsSection('notifications')">Cancel</button>
             </div>
         </div>`;
@@ -1846,6 +1867,7 @@ function _showConflictModal(destVolume, destPool, onProceed) {
                 <div class="conflict-rename-wrap" id="conflictRenameWrap">
                     <input type="text" id="conflictRenameInput" class="conflict-rename-input"
                         placeholder="New volume name"
+                        maxlength="255" pattern="${VOLUME_NAME_PATTERN}" title="${VOLUME_NAME_TITLE}"
                         oninput="_validateConflictProceed()"
                         onclick="event.stopPropagation()">
                 </div>
@@ -2083,6 +2105,44 @@ function createToast(message, type) {
 }
 
 // Close modals / settings on background click
+// ── Delegated action dispatch ───────────────────────────────────────────────
+// Markup uses data-action + data-* attributes instead of inline onclick="fn('...')"
+// so user-controlled names (pools, volumes, files) can never break out of an
+// attribute into executable JS. Values are read safely via element.dataset.
+const ACTION_HANDLERS = {
+    'select-pool':         (d) => selectPool(d.pool),
+    'open-create-volume':  (d) => openCreateVolumeModal(d.pool),
+    'open-migrate':        (d) => openMigrateModal(d.pool, d.vol),
+    'open-backup':         (d) => openBackupModal(d.pool, d.vol),
+    'open-rename':         (d) => openRenameVolumeModal(d.pool, d.vol),
+    'open-delete':         (d) => openDeleteModal(d.pool, d.vol),
+    'open-restore':        (d) => openRestoreModal(d.pool, d.file),
+    'create-volume':       (d) => createVolume(d.pool),
+    'rename-volume':       (d) => renameVolume(d.pool, d.vol),
+    'start-migration':     (d) => startMigration(d.pool, d.vol),
+    'start-backup':        (d) => startBackup(d.pool, d.vol),
+    'start-restore':       (d) => startRestore(d.pool, d.file),
+    'confirm-delete':      (d) => confirmDelete(d.pool, d.vol),
+    'toggle-schedule':     (d) => toggleSchedule(d.id),
+    'run-schedule':        (d) => runScheduleNow(d.id),
+    'edit-schedule':       (d) => openScheduleForm(d.id),
+    'delete-schedule':     (d) => deleteSchedule(d.id),
+    'save-schedule':       (d) => saveSchedule(d.id ?? null),
+    'toggle-notification': (d) => toggleNotification(d.id),
+    'test-notification':   (d) => testNotification(d.id),
+    'edit-notification':   (d) => openNotificationForm(d.id),
+    'delete-notification': (d) => deleteNotification(d.id),
+    'save-notification':   (d) => saveNotification(d.id ?? null),
+    'open-task-detail':    (d) => openTaskDetailModalById(d.id),
+};
+
+document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-action]');
+    if (!el) return;
+    const handler = ACTION_HANDLERS[el.dataset.action];
+    if (handler) handler(el.dataset);
+});
+
 document.addEventListener('click', (e) => {
     if (e.target.id === 'settingsOverlay') {
         closeSettings();

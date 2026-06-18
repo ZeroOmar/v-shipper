@@ -11,6 +11,7 @@ from threading import Lock, Thread
 from typing import Any, List, Dict, Optional
 from app.models import VolumeInfo, PoolStats
 from app.services.task_queue import get_task_queue
+from app.validation import validate_name, safe_join
 
 
 class VolumeService:
@@ -78,6 +79,8 @@ class VolumeService:
 
         target = f"rsync://{remote_host}/{rsync_module}"
         if volume_name:
+            # Reject names that could inject rsync filter/path syntax.
+            volume_name = validate_name(volume_name, "volume_name")
             target = f"{target}/{volume_name}"
         if trailing_slash:
             target = f"{target.rstrip('/')}/"
@@ -407,12 +410,11 @@ class VolumeService:
         if not pool:
             return False
 
-        pool_resolved = Path(pool["path"]).resolve()
-        old_path = (pool_resolved / old_name).resolve()
-        new_path = (pool_resolved / new_name).resolve()
-
-        if not old_path.is_relative_to(pool_resolved) or not new_path.is_relative_to(pool_resolved):
-            print(f"[ERROR] Path traversal attempt in rename: {old_name} -> {new_name}", flush=True)
+        try:
+            old_path = safe_join(pool["path"], old_name)
+            new_path = safe_join(pool["path"], new_name)
+        except ValueError as e:
+            print(f"[ERROR] Path traversal attempt in rename: {e}", flush=True)
             return False
 
         try:
@@ -440,11 +442,10 @@ class VolumeService:
             print(f"[ERROR] Cannot create volume in remote pool '{pool_name}'", flush=True)
             return False
 
-        pool_resolved = Path(pool["path"]).resolve()
-        new_path = (pool_resolved / volume_name).resolve()
-
-        if not new_path.is_relative_to(pool_resolved):
-            print(f"[ERROR] Path traversal attempt in create_volume: {volume_name}", flush=True)
+        try:
+            new_path = safe_join(pool["path"], volume_name)
+        except ValueError as e:
+            print(f"[ERROR] Path traversal attempt in create_volume: {e}", flush=True)
             return False
 
         try:
@@ -464,6 +465,13 @@ class VolumeService:
         if not pool:
             return False
         
+        # Reject names that could inject rsync filter syntax or path traversal.
+        try:
+            volume_name = validate_name(volume_name, "volume_name")
+        except ValueError as e:
+            print(f"[ERROR] Invalid volume name in delete: {e}", flush=True)
+            return False
+
         # Handle remote pools via rsync
         if self._is_remote_pool(pool):
             try:
@@ -504,11 +512,10 @@ class VolumeService:
                 return False
         
         # Handle local pools normally
-        pool_resolved = Path(pool["path"]).resolve()
-        volume_path = (pool_resolved / volume_name).resolve()
-
-        if not volume_path.is_relative_to(pool_resolved):
-            print(f"[ERROR] Path traversal attempt in delete: {volume_name}", flush=True)
+        try:
+            volume_path = safe_join(pool["path"], volume_name)
+        except ValueError as e:
+            print(f"[ERROR] Path traversal attempt in delete: {e}", flush=True)
             return False
 
         try:

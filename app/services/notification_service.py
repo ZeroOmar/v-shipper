@@ -2,6 +2,7 @@
 
 import datetime
 import json
+import re
 import socket
 import time
 import urllib.request
@@ -10,13 +11,20 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
+# Matches a single {placeholder} token (word chars only — no attribute/index access).
+_PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
+
 
 DEFAULT_TEMPLATE = (
     "\U0001f514 *{task_type_label}* {status_emoji}\n"
-    "\U0001f4e6 Volume: `{volume}` on `{pool}`\n"
-    "Status: {status}\n"
-    "⏱ Duration: {elapsed}s\n"
-    "\U0001f552 {timestamp}"
+    "`{target}`\n"
+    "\n"
+    "Status: *{status}*\n"
+    "⏱ {elapsed}s\n"
+    "⏱ Started: {started_at}\n"
+    "\U0001f3c1 Finished: {timestamp}\n"
+    "\U0001f5a5 Host: {hostname}"
+    "{params_block}"
     "{error_block}"
 )
 
@@ -27,7 +35,35 @@ _TASK_TYPE_LABELS: Dict[str, str] = {
     "restore": "Restore",
     "delete": "Delete",
     "rename": "Rename",
+    "create": "Create Volume",
 }
+
+_PARAM_LABELS: Dict[str, str] = {
+    "source_pool":       "Source Pool",
+    "source_volume":     "Source Volume",
+    "dest_pool":         "Destination Pool",
+    "dest_volume":       "Destination Volume",
+    "dest_volume_name":  "Dest Volume Name",
+    "backup_pool":       "Backup Pool",
+    "backup_file":       "Backup File",
+    "pool":              "Pool",
+    "volume_name":       "Volume",
+    "new_name":          "New Name",
+    "verify":            "Verify",
+    "delete_source":     "Delete Source",
+    "compress":          "Compress",
+    "exclude_patterns":  "Exclude Patterns",
+    "job_name":          "Job Name",
+    "parent_job":        "Job Name",
+    "retention_count":   "Retention",
+    "volumes":           "Volumes",
+    "total_volumes":     "Total Volumes",
+    "completed_volumes": "Completed",
+    "failed_volumes":    "Failed",
+}
+
+# Params that are internal implementation details, not meaningful to the user.
+_HIDDEN_PARAMS = {"scheduled", "conflict_resolution", "rename_dest"}
 
 
 class NotificationService:
@@ -99,7 +135,7 @@ class NotificationService:
     # ── Notification dispatch ─────────────────────────────────────────────────
 
     def notify_task_completion(self, task: dict):
-        """Route a completed task to matching notification configs."""
+        """Route a completed task to all matching notification configs."""
         topic = self._task_to_topic(task)
         if not topic:
             return
@@ -112,20 +148,7 @@ class NotificationService:
                 continue
             if cfg.get("on_failure_only") and task.get("status") != "failed":
                 continue
-            self._send(cfg, self._build_task_message(cfg, task))
-
-    def notify_operation(self, topic: str, context: dict):
-        """Send a notification for a non-task-based operation (e.g. rename)."""
-        with self._lock:
-            configs = list(self._configs.values())
-        for cfg in configs:
-            if not cfg.get("enabled"):
-                continue
-            if topic not in (cfg.get("topics") or []):
-                continue
-            if cfg.get("on_failure_only") and not context.get("failed"):
-                continue
-            self._send(cfg, self._build_op_message(cfg, topic, context))
+            self._send(cfg, self._build_message(cfg, task))
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
@@ -138,22 +161,93 @@ class NotificationService:
             return "backup"
         if t == "scheduled_backup":
             return "schedule"
-        if t in ("migrate", "restore", "delete"):
+        if t in ("migrate", "restore", "delete", "rename", "create"):
             return t
         return None
 
-    def _build_task_message(self, cfg: dict, task: dict) -> str:
+    def _build_target_label(self, task_type: str, params: dict) -> str:
+        """Compute a human-readable source → dest label matching the task details page."""
+        if task_type == "scheduled_backup":
+            job = params.get("job_name") or params.get("parent_job") or ""
+            pool = params.get("backup_pool") or ""
+            return f"{job} → {pool}" if job else pool or "—"
+        if task_type in ("delete", "create"):
+            pool = params.get("pool") or params.get("source_pool") or ""
+            vol = params.get("volume_name") or params.get("source_volume") or "—"
+            return f"{pool}/{vol}" if pool else vol
+        if task_type == "rename":
+            pool = params.get("pool") or ""
+            vol = params.get("volume_name") or "—"
+            new = params.get("new_name") or "?"
+            return f"{pool}/{vol} → {new}" if pool else f"{vol} → {new}"
+        if task_type == "backup":
+            src_pool = params.get("source_pool") or ""
+            src_vol = params.get("source_volume") or "—"
+            dst = params.get("backup_pool") or "backup pool"
+            src = f"{src_pool}/{src_vol}" if src_pool else src_vol
+            return f"{src} → {dst}"
+        if task_type == "migrate":
+            src = f"{params.get('source_pool', '?')}/{params.get('source_volume', '?')}"
+            dst_pool = params.get("dest_pool") or "?"
+            dst_vol = params.get("dest_volume") or params.get("dest_volume_name") or ""
+            return f"{src} → {dst_pool}/{dst_vol}" if dst_vol else f"{src} → {dst_pool}"
+        if task_type == "restore":
+            file_ = params.get("backup_file") or params.get("source_volume") or "—"
+            dst_pool = params.get("dest_pool") or ""
+            dst_vol = params.get("dest_volume_name") or params.get("dest_volume") or ""
+            dst = f"{dst_pool}/{dst_vol}" if dst_pool else dst_vol or "destination"
+            return f"{file_} → {dst}"
+        vol = params.get("source_volume") or params.get("volume_name") or params.get("backup_file") or "—"
+        pool = params.get("source_pool") or params.get("pool") or ""
+        return f"{pool}/{vol}" if pool else vol
+
+    def _build_params_block(self, params: dict) -> str:
+        """Render all task params as a formatted list, omitting internal fields."""
+        lines = []
+        seen_labels: set = set()
+        for k, v in params.items():
+            if k in _HIDDEN_PARAMS:
+                continue
+            if v is None or v == "" or v == [] or v == {}:
+                continue
+            label = _PARAM_LABELS.get(k, k.replace("_", " ").title())
+            # Deduplicate when two keys map to the same label (e.g. job_name + parent_job)
+            if label in seen_labels:
+                continue
+            seen_labels.add(label)
+            if isinstance(v, bool):
+                val = "Yes" if v else "No"
+            elif isinstance(v, list):
+                val = ", ".join(str(x) for x in v)
+            elif isinstance(v, dict):
+                val = json.dumps(v)
+            else:
+                val = str(v)
+            lines.append(f"  {label}: `{val}`")
+        if not lines:
+            return ""
+        return "\n\n\U0001f4cb *Parameters*\n" + "\n".join(lines)
+
+    def _build_message(self, cfg: dict, task: dict) -> str:
+        """Build a notification message directly from the task dict."""
         params = task.get("params") or {}
-        status = task.get("status", "unknown")
-        status_emoji = "✅" if status == "completed" else "❌"
-        elapsed = task.get("elapsed_seconds", 0)
-        elapsed_str = f"{elapsed:.1f}" if isinstance(elapsed, (int, float)) else str(elapsed)
-        ts = task.get("completed_at") or time.time()
-        timestamp = datetime.datetime.fromtimestamp(ts).strftime("%d/%m/%Y %H:%M:%S")
-        error = task.get("error") or ""
-        error_block = f"\n❗ Error: {error}" if error else ""
         task_type = (task.get("type") or task.get("task_type") or "task").lower()
         task_type_label = _TASK_TYPE_LABELS.get(task_type, task_type.replace("_", " ").title())
+        status = task.get("status", "unknown")
+        status_emoji = "✅" if status == "completed" else "❌"
+
+        elapsed = task.get("elapsed_seconds", 0)
+        elapsed_str = f"{elapsed:.1f}" if isinstance(elapsed, (int, float)) else str(elapsed)
+
+        completed_ts = task.get("completed_at") or time.time()
+        timestamp = datetime.datetime.fromtimestamp(completed_ts).strftime("%d/%m/%Y %H:%M:%S")
+        started_ts = task.get("started_at")
+        started_at = datetime.datetime.fromtimestamp(started_ts).strftime("%d/%m/%Y %H:%M:%S") if started_ts else "—"
+
+        error = task.get("error") or ""
+        error_block = f"\n❗ Error: {error}" if error else ""
+
+        # Legacy convenience aliases kept so custom templates using them still work
         volume = (
             params.get("source_volume")
             or params.get("volume_name")
@@ -167,51 +261,44 @@ class NotificationService:
             or params.get("dest_pool")
             or "—"
         )
+
         return self._render_template(
             cfg,
+            task_id=task.get("task_id") or "—",
             task_type=task_type,
             task_type_label=task_type_label,
             status=status,
             status_emoji=status_emoji,
+            target=self._build_target_label(task_type, params),
+            elapsed=elapsed_str,
+            started_at=started_at,
+            timestamp=timestamp,
+            current_operation=task.get("current_operation") or "",
+            error=error,
+            error_block=error_block,
+            params_block=self._build_params_block(params),
+            # legacy single-field aliases
             volume=volume,
             pool=pool,
-            elapsed=elapsed_str,
-            timestamp=timestamp,
-            error=error,
-            error_block=error_block,
+            source_volume=params.get("source_volume") or params.get("volume_name") or "—",
+            source_pool=params.get("source_pool") or params.get("pool") or "—",
+            dest_volume=params.get("dest_volume") or params.get("dest_volume_name") or "—",
+            dest_pool=params.get("dest_pool") or "—",
+            backup_pool=params.get("backup_pool") or "—",
+            backup_file=params.get("backup_file") or "—",
             job_name=params.get("job_name") or params.get("parent_job") or "—",
-            hostname=socket.gethostname(),
-        )
-
-    def _build_op_message(self, cfg: dict, topic: str, context: dict) -> str:
-        status = "failed" if context.get("failed") else "completed"
-        status_emoji = "✅" if status == "completed" else "❌"
-        timestamp = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        error = context.get("error") or ""
-        error_block = f"\n❗ Error: {error}" if error else ""
-        label = _TASK_TYPE_LABELS.get(topic, topic.replace("_", " ").title())
-        return self._render_template(
-            cfg,
-            task_type=topic,
-            task_type_label=label,
-            status=status,
-            status_emoji=status_emoji,
-            volume=context.get("volume") or "—",
-            pool=context.get("pool") or "—",
-            elapsed="—",
-            timestamp=timestamp,
-            error=error,
-            error_block=error_block,
-            job_name="—",
             hostname=socket.gethostname(),
         )
 
     def _render_template(self, cfg: dict, **kwargs: Any) -> str:
         template = (cfg.get("message_template") or "").strip() or DEFAULT_TEMPLATE
-        try:
-            return template.format(**kwargs)
-        except KeyError as e:
-            return f"[v-shipper] {kwargs.get('task_type_label', 'Task')} {kwargs.get('status', '')} — template variable {e} not found"
+        # Safe substitution: replace only known {field} tokens from the allowlist.
+        # Unknown tokens are left literal. This avoids Python str.format() attribute/
+        # index traversal (e.g. {hostname.__class__...}) on user-supplied templates.
+        def _sub(match: "re.Match") -> str:
+            key = match.group(1)
+            return str(kwargs[key]) if key in kwargs else match.group(0)
+        return _PLACEHOLDER_RE.sub(_sub, template)
 
     def _send(self, cfg: dict, text: str) -> bool:
         try:

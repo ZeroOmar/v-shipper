@@ -12,6 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.config import get_config
+from app.validation import validate_backup_file
 
 
 class SchedulerService:
@@ -291,6 +292,13 @@ class SchedulerService:
 
             with tempfile.TemporaryDirectory() as empty_dir:
                 for archive_name in to_delete:
+                    # The filename comes from the remote daemon's listing; validate it
+                    # before embedding in an rsync filter rule.
+                    try:
+                        archive_name = validate_backup_file(archive_name)
+                    except ValueError:
+                        log(f"Skipping archive with unsafe name: {archive_name!r}")
+                        continue
                     cmd = [
                         "rsync", "-az", "--delete",
                         f"--filter=+ {archive_name}",

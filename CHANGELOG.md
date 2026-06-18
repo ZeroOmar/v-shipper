@@ -2,6 +2,29 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.2.0
+
+### Security
+
+- **Comprehensive input validation at the API boundary** — all request models now enforce a strict Docker-style name policy (`[A-Za-z0-9][A-Za-z0-9_.-]`, max 255 chars, no path separators or `..`), length caps, and value ranges (retention 1–365, `conflict_resolution` restricted to `overwrite`/`merge`/`rename`); path and query parameters (`pool`, `volume_name`, `task_id`) are validated explicitly since they bypass model validation
+- **Defense-in-depth path containment** — a shared `safe_join` helper resolves and confirms every constructed path stays inside its pool directory; applied across `volume_service`, `backup_service`, and `migration_service`, replacing the previously inconsistent inline checks and closing unguarded f-string path construction
+- **rsync filter-rule injection closed** — volume and archive names are validated before being interpolated into remote rsync `--include`/`--filter` rules in `volume_service` and `scheduler_service`
+- **Notification template injection closed** — user-supplied message templates are rendered via allowlist token substitution instead of `str.format()`, so attribute-traversal payloads like `{hostname.__class__...}` are left literal
+- **Notification config hardening** — `server_url` (http/https only), Telegram token, chat ID, and thread ID formats are validated; SSRF and malformed-endpoint values are rejected
+- **Startup config validation** — `VOLUME_MANAGER_CONFIG` is now validated on boot (names, `pool_type`, port range, absolute paths, required remote-pool fields, unique pool names) and refuses to start with a clear `Invalid VOLUME_MANAGER_CONFIG: <field> — <reason>` message instead of failing later deep in a service
+- **Frontend XSS surface eliminated** — dynamic `onclick="fn('${name}')"` handlers were replaced with `data-action` attributes and a single delegated click listener; all user-controlled names are HTML-escaped in both visible text and attributes, so a volume named with quotes or markup can no longer break out into executable JS
+
+### Added
+
+- **Richer notification messages** — the default Telegram template now mirrors the task details view: full source → destination target, start/finish timestamps, duration, host, and a `{params_block}` listing every task parameter. New template variables include `{target}`, `{params_block}`, `{started_at}`, `{task_id}`, `{current_operation}`, and per-field aliases (`{source_pool}`, `{dest_volume}`, `{backup_file}`, etc.)
+- **Create and rename volume now appear as tasks** — `POST /api/volume/create` and `POST /api/rename` create tracked tasks (with progress and history entries) and trigger notifications under new `create` and `rename` topics, consistent with backup/migrate/restore/delete
+- **Global exception handlers** — unhandled errors return a generic 500 (no traceback leaked to clients) while logging full context server-side; request-validation failures return concise 422s with the offending field and reason
+
+### Changed
+
+- **Stricter name acceptance** — creating or renaming volumes/pools through the API now rejects names containing spaces, slashes, `..`, or control characters. Existing directories with such names continue to list and function, but cannot be created or renamed via the API
+- **Notification dispatch is task-driven** — all operations create tasks and notifications are derived directly from the completed task, removing the separate non-task notification path
+
 ## 0.1.1
 
 ### Fixed

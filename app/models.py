@@ -1,33 +1,77 @@
 """Data models for v-shipper application."""
 
 import base64
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, field_validator
+from typing import Optional, List, Dict, Any, Literal
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from app.validation import (
+    validate_name,
+    validate_backup_file,
+    validate_pool_path,
+    validate_cron,
+    validate_telegram_token,
+    validate_chat_id,
+    validate_thread_id,
+    validate_server_url,
+    validate_remote_host,
+    MAX_TEMPLATE_LEN,
+    MAX_CREDENTIAL_LEN,
+)
 
 
-class DockerHost(BaseModel):
+class _PoolBase(BaseModel):
+    """Shared validation for docker/backup pool config entries."""
+    name: str
+    pool: str
+    pool_type: Literal["local", "remote"] = "local"
+    remote_host: Optional[str] = None
+    rsync_module: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v):
+        return validate_name(v, "pool name")
+
+    @model_validator(mode="after")
+    def _validate_pool(self):
+        if self.pool_type == "remote":
+            if not self.remote_host or not self.rsync_module:
+                raise ValueError(
+                    f"remote pool '{self.name}' requires both remote_host and rsync_module"
+                )
+            validate_remote_host(self.remote_host)
+            validate_name(self.rsync_module, "rsync_module")
+        else:
+            validate_pool_path(self.pool, "pool path")
+        return self
+
+
+class DockerHost(_PoolBase):
     """Docker host pool configuration."""
-    name: str
-    pool: str
-    pool_type: str = "local"  # 'local' or 'remote'
-    remote_host: Optional[str] = None
-    rsync_module: Optional[str] = None
 
 
-class BackupPool(BaseModel):
+class BackupPool(_PoolBase):
     """Backup pool configuration."""
-    name: str
-    pool: str
-    pool_type: str = "local"  # 'local' or 'remote'
-    remote_host: Optional[str] = None
-    rsync_module: Optional[str] = None
 
 
 class WebUIConfig(BaseModel):
     """Web UI configuration."""
-    port: int = 80
+    port: int = Field(80, ge=1, le=65535)
     admin_user: str
     admin_password: str
+
+    @field_validator("admin_user")
+    @classmethod
+    def _validate_user(cls, v):
+        return validate_name(v, "admin_user")
+
+    @field_validator("admin_password")
+    @classmethod
+    def _validate_password(cls, v):
+        # Opaque (may be base64 or plaintext) — length cap only, no charset restriction.
+        if not isinstance(v, str) or len(v) > MAX_CREDENTIAL_LEN:
+            raise ValueError("admin_password is invalid or too long")
+        return v
 
 
 class AppConfig(BaseModel):
@@ -38,7 +82,7 @@ class AppConfig(BaseModel):
     tmp_dir: str = "/tmp"
     staging_dir: str = "/tmp/staging"
     config_dir: str = "/config"
-    
+
     @field_validator('docker_hosts', 'backup_pools', mode='before')
     @classmethod
     def validate_lists(cls, v):
@@ -46,13 +90,26 @@ class AppConfig(BaseModel):
             return []
         return v
 
+    @field_validator("tmp_dir", "staging_dir", "config_dir")
+    @classmethod
+    def _validate_dirs(cls, v, info):
+        return validate_pool_path(v, info.field_name)
+
+    @model_validator(mode="after")
+    def _validate_unique_pool_names(self):
+        names = [h.name for h in self.docker_hosts] + [b.name for b in self.backup_pools]
+        dupes = {n for n in names if names.count(n) > 1}
+        if dupes:
+            raise ValueError(f"duplicate pool names are not allowed: {', '.join(sorted(dupes))}")
+        return self
+
 
 # API Request/Response Models
 
 class LoginRequest(BaseModel):
     """Login request."""
-    username: str
-    password: str
+    username: str = Field(..., max_length=MAX_CREDENTIAL_LEN)
+    password: str = Field(..., max_length=MAX_CREDENTIAL_LEN)
 
 
 class PoolStats(BaseModel):
@@ -131,6 +188,9 @@ class VolumeDetailResponse(BaseModel):
     permissions: Optional[str] = None
 
 
+ConflictResolution = Optional[Literal["overwrite", "merge", "rename"]]
+
+
 class MigrateRequest(BaseModel):
     """Migration request."""
     source_pool: str
@@ -138,8 +198,23 @@ class MigrateRequest(BaseModel):
     dest_pool: str
     verify: bool = True
     delete_source: bool = False
-    conflict_resolution: Optional[str] = None  # 'overwrite', 'merge', 'rename'
+    conflict_resolution: ConflictResolution = None
     rename_dest: Optional[str] = None
+
+    @field_validator("source_pool", "dest_pool")
+    @classmethod
+    def _validate_pool(cls, v, info):
+        return validate_name(v, info.field_name)
+
+    @field_validator("source_volume")
+    @classmethod
+    def _validate_volume(cls, v):
+        return validate_name(v, "source_volume")
+
+    @field_validator("rename_dest")
+    @classmethod
+    def _validate_rename_dest(cls, v):
+        return v if v is None else validate_name(v, "rename_dest")
 
 
 class BackupRequest(BaseModel):
@@ -149,12 +224,22 @@ class BackupRequest(BaseModel):
     backup_pool: str
     verify: bool = True
 
+    @field_validator("source_pool", "source_volume", "backup_pool")
+    @classmethod
+    def _validate(cls, v, info):
+        return validate_name(v, info.field_name)
+
 
 class RenameRequest(BaseModel):
     """Rename request."""
     pool: str
     old_name: str
     new_name: str
+
+    @field_validator("pool", "old_name", "new_name")
+    @classmethod
+    def _validate(cls, v, info):
+        return validate_name(v, info.field_name)
 
 
 class DeleteRequest(BaseModel):
@@ -163,6 +248,11 @@ class DeleteRequest(BaseModel):
     volume_name: str
     confirm: bool = False
 
+    @field_validator("pool", "volume_name")
+    @classmethod
+    def _validate(cls, v, info):
+        return validate_name(v, info.field_name)
+
 
 class RestoreRequest(BaseModel):
     """Restore backup request."""
@@ -170,8 +260,23 @@ class RestoreRequest(BaseModel):
     backup_file: str
     dest_pool: str
     dest_volume: str
-    conflict_resolution: Optional[str] = None  # 'overwrite', 'merge', 'rename'
+    conflict_resolution: ConflictResolution = None
     rename_dest: Optional[str] = None
+
+    @field_validator("backup_pool", "dest_pool", "dest_volume")
+    @classmethod
+    def _validate_names(cls, v, info):
+        return validate_name(v, info.field_name)
+
+    @field_validator("backup_file")
+    @classmethod
+    def _validate_file(cls, v):
+        return validate_backup_file(v)
+
+    @field_validator("rename_dest")
+    @classmethod
+    def _validate_rename_dest(cls, v):
+        return v if v is None else validate_name(v, "rename_dest")
 
 
 class PoolCreateRequest(BaseModel):
@@ -179,17 +284,32 @@ class PoolCreateRequest(BaseModel):
     name: str
     path: str
 
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v):
+        return validate_name(v, "name")
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, v):
+        return validate_pool_path(v, "path")
+
 
 class VolumeCreateRequest(BaseModel):
     """Create new volume (directory) request."""
     pool: str
     volume_name: str
 
+    @field_validator("pool", "volume_name")
+    @classmethod
+    def _validate(cls, v, info):
+        return validate_name(v, info.field_name)
+
 
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str = "ok"
-    version: str = "0.1.1"
+    version: str = "0.2.0"
 
 
 # ── Backup Schedule Models ────────────────────────────────────────────────────
@@ -198,6 +318,11 @@ class ScheduleVolume(BaseModel):
     """A volume entry in a backup schedule."""
     pool: str
     volume: str
+
+    @field_validator("pool", "volume")
+    @classmethod
+    def _validate(cls, v, info):
+        return validate_name(v, info.field_name)
 
 
 class BackupSchedule(BaseModel):
@@ -218,7 +343,17 @@ class BackupScheduleCreate(BaseModel):
     cron: str
     backup_pool: str
     volumes: List[ScheduleVolume]
-    retention: int = 7
+    retention: int = Field(7, ge=1, le=365)
+
+    @field_validator("name", "backup_pool")
+    @classmethod
+    def _validate_names(cls, v, info):
+        return validate_name(v, info.field_name)
+
+    @field_validator("cron")
+    @classmethod
+    def _validate_cron(cls, v):
+        return validate_cron(v)
 
 
 class SchedulesResponse(BaseModel):
@@ -251,7 +386,41 @@ class NotificationCreate(BaseModel):
     topics: List[str]
     on_failure_only: bool = False
     server_url: str = "https://api.telegram.org"
-    message_template: Optional[str] = None
+    message_template: Optional[str] = Field(None, max_length=MAX_TEMPLATE_LEN)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v):
+        return validate_name(v, "name")
+
+    @field_validator("token")
+    @classmethod
+    def _validate_token(cls, v):
+        return validate_telegram_token(v)
+
+    @field_validator("chat_id")
+    @classmethod
+    def _validate_chat_id(cls, v):
+        return validate_chat_id(v)
+
+    @field_validator("message_thread_id")
+    @classmethod
+    def _validate_thread_id(cls, v):
+        return validate_thread_id(v)
+
+    @field_validator("server_url")
+    @classmethod
+    def _validate_server_url(cls, v):
+        return validate_server_url(v)
+
+    @field_validator("topics")
+    @classmethod
+    def _validate_topics(cls, v):
+        allowed = {"backup", "schedule", "migrate", "restore", "delete", "rename", "create"}
+        for t in v:
+            if t not in allowed:
+                raise ValueError(f"unknown topic: {t}")
+        return v
 
 
 class NotificationsResponse(BaseModel):
