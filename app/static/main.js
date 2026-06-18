@@ -38,6 +38,18 @@ function formatDateTime(ts) {
     return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
 }
 
+// Format a duration given in seconds as hh:mm:ss.SSS
+function formatDuration(seconds) {
+    const total = Number(seconds);
+    if (!isFinite(total) || total < 0) return '00:00:00.000';
+    const ms = Math.round(total * 1000);
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    const millis = ms % 1000;
+    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(millis).padStart(3,'0')}`;
+}
+
 // ============ Initialization ============
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1069,7 +1081,7 @@ function renderTaskHistory() {
                 <div class="progress-bar">
                     <div class="progress-fill" style="width: ${task.progress_percent}%"></div>
                 </div>
-                <div class="task-meta">${task.progress_percent}% · ${task.elapsed_seconds}s${task.estimated_remaining_seconds ? ` · ${task.estimated_remaining_seconds}s left` : ''}</div>
+                <div class="task-meta">${task.progress_percent}% · ${formatDuration(task.elapsed_seconds)}${task.estimated_remaining_seconds ? ` · ${formatDuration(task.estimated_remaining_seconds)} left` : ''}</div>
             </div>
         `;
     }).join('');
@@ -1614,7 +1626,7 @@ const NOTIFICATION_DEFAULT_TEMPLATE = [
     '`{target}`',
     '',
     'Status: *{status}*',
-    '⏱ {elapsed}s',
+    '⏱ {elapsed}',
     '⏱ Started: {started_at}',
     '\u{1F3C1} Finished: {timestamp}',
     '\u{1F5A5} Host: {hostname}',
@@ -2108,8 +2120,8 @@ function _renderTaskDetail(task, logLines) {
             </div>
             <div class="task-detail-stats">
                 <span>${task.progress_percent || 0}%</span>
-                <span>${task.elapsed_seconds || 0}s elapsed</span>
-                ${task.estimated_remaining_seconds ? `<span>~${task.estimated_remaining_seconds}s left</span>` : ''}
+                <span>${formatDuration(task.elapsed_seconds)} elapsed</span>
+                ${task.estimated_remaining_seconds ? `<span>~${formatDuration(task.estimated_remaining_seconds)} left</span>` : ''}
                 <span>Started: ${startedStr}</span>
                 ${task.completed_at ? `<span>Finished: ${completedStr}</span>` : ''}
             </div>

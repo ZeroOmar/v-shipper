@@ -2,6 +2,12 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.3.1
+
+### Changed
+
+- **Elapsed and remaining times now display as `hh:mm:ss.SSS`** — task durations were shown everywhere as a raw seconds count (e.g. `3661.1s`). The task history cards, the task detail panel, and the Telegram notification messages now format durations as `hh:mm:ss.SSS` (e.g. `01:01:01.100`). The default notification template's `{elapsed}` placeholder is now pre-formatted, so its trailing `s` suffix was dropped; the stored `elapsed_seconds` field is unchanged, so this is purely a presentation change
+
 ## 0.3.0
 
 ### Fixed

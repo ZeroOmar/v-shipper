@@ -15,12 +15,27 @@ from typing import Any, Dict, List, Optional
 _PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
 
 
+def format_duration(seconds: float) -> str:
+    """Format a duration given in seconds as hh:mm:ss.SSS."""
+    try:
+        total = float(seconds)
+    except (TypeError, ValueError):
+        return "00:00:00.000"
+    if total < 0:
+        total = 0.0
+    ms = round(total * 1000)
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
 DEFAULT_TEMPLATE = (
     "\U0001f514 *{task_type_label}* {status_emoji}\n"
     "`{target}`\n"
     "\n"
     "Status: *{status}*\n"
-    "⏱ {elapsed}s\n"
+    "⏱ {elapsed}\n"
     "⏱ Started: {started_at}\n"
     "\U0001f3c1 Finished: {timestamp}\n"
     "\U0001f5a5 Host: {hostname}"
@@ -237,7 +252,7 @@ class NotificationService:
         status_emoji = "✅" if status == "completed" else "❌"
 
         elapsed = task.get("elapsed_seconds", 0)
-        elapsed_str = f"{elapsed:.1f}" if isinstance(elapsed, (int, float)) else str(elapsed)
+        elapsed_str = format_duration(elapsed) if isinstance(elapsed, (int, float)) else str(elapsed)
 
         completed_ts = task.get("completed_at") or time.time()
         timestamp = datetime.datetime.fromtimestamp(completed_ts).strftime("%d/%m/%Y %H:%M:%S")
