@@ -8,10 +8,13 @@ Docker volume migration and backup tool with a web UI. Stateless, containerized,
 - **Pool Management** — local pools and remote rsync daemon pools
 - **Volume Migration** — rsync-based with permission preservation and optional verify + delete-source
 - **Backup / Restore** — tar.gz archives to local or remote rsync backup pools
+- **Backup Schedules** — cron-based scheduled backups with configurable retention
+- **Telegram Notifications** — per-topic alerts for backup, migration, restore, and other events
+- **v-helper Integration** — remote pools backed by [v-helper](https://github.com/ZeroOmar/v-helper) gain create/rename volume support and real disk free space
 - **Exclusive Locks** — prevents concurrent operations on the same volume
 - **Real-time Progress** — polling-based task progress with background size calculation
 - **Crash Recovery** — persists task state; marks incomplete tasks failed on restart
-- **Containerized** — Alpine Linux, ~350-400MB, multi-platform (amd64 + arm64)
+- **Containerized** — Alpine Linux, multi-platform (amd64 + arm64)
 
 ## Configuration
 
@@ -28,6 +31,9 @@ docker_hosts:
     pool_type: remote
     remote_host: 10.0.0.5:873
     rsync_module: docker-volumes
+    # Optional: connect to a v-helper sidecar for create/rename/disk-free support
+    api_host: 10.0.0.5:8888
+    api_key: your-shared-secret
 
 backup_pools:
   - name: local-backup
@@ -42,7 +48,7 @@ backup_pools:
 
 tmp_dir: /tmp               # base dir for locks and staging (default: /tmp)
 staging_dir: /tmp/staging   # override staging path (default: {tmp_dir}/staging)
-config_dir: /config         # persistent config dir for task/schedule state (default: /config)
+config_dir: /config         # persistent config dir for task/schedule/notification state (default: /config)
 
 web_ui:
   port: 8000
@@ -56,6 +62,7 @@ web_ui:
 |---|---|
 | `local` | Direct filesystem access. `pool` is the absolute path. |
 | `remote` | rsync daemon protocol. Requires `remote_host` (`host:port`) and `rsync_module`. `pool` is ignored. |
+| `remote` + v-helper | Add `api_host` and `api_key` to connect a [v-helper](https://github.com/ZeroOmar/v-helper) sidecar. Enables create/rename volume and real disk free space. File transfers still use rsync. |
 
 Remote pools must be accessible via the rsync daemon protocol (`rsync://host:port/module`). SSH is not supported. For NFS/CIFS-mounted paths, use `pool_type: local` with the mount path.
 
@@ -115,6 +122,7 @@ All endpoints require authentication (session cookie set at login).
 | GET | `/api/pools` | List all pools with disk stats |
 | GET | `/api/volumes?pool=<name>` | List volumes in a pool |
 | GET | `/api/volume/<pool>/<name>` | Volume detail |
+| POST | `/api/volume/create` | Create a new volume directory |
 | POST | `/api/rename` | Rename volume |
 | POST | `/api/delete` | Delete volume (warns if no backup exists) |
 | POST | `/api/pool/create` | Create new local pool directory |
@@ -143,10 +151,21 @@ All endpoints require authentication (session cookie set at login).
 | POST | `/api/schedules/{id}/toggle` | Enable or disable a schedule job |
 | POST | `/api/schedules/{id}/run` | Trigger a schedule job immediately |
 
+### Notifications
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/notifications` | List all notification configs |
+| POST | `/api/notifications` | Create a notification config |
+| PUT | `/api/notifications/{id}` | Update a notification config |
+| DELETE | `/api/notifications/{id}` | Delete a notification config |
+| POST | `/api/notifications/{id}/toggle` | Enable or disable a notification config |
+| POST | `/api/notifications/{id}/test` | Send a test notification |
+
 ### Utility
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/health` | Health check |
+| GET | `/api/refresh` | Force a volume size cache refresh |
 | POST | `/api/debug/cleanup` | Clear stale lock files and task state |
 
 ### Example — migrate via curl
@@ -179,16 +198,19 @@ v-shipper/
 │   ├── app.py              # FastAPI entry point, lifespan, CORS
 │   ├── config.py           # YAML config load, auth validation
 │   ├── models.py           # Pydantic request/response models
+│   ├── validation.py       # Shared input validators, safe_join
 │   ├── api/
 │   │   └── routes.py       # All REST endpoints
 │   └── services/
-│       ├── volume_service.py    # Volume discovery, stats, rename/delete
-│       ├── migration_service.py # rsync orchestration, lockfiles
-│       ├── backup_service.py    # tar archiving, remote restore staging
-│       ├── scheduler_service.py # APScheduler-backed cron backup jobs
-│       ├── docker_service.py    # Docker SDK wrapper (minimal use)
-│       └── task_queue.py        # Sequential queue, progress, crash recovery
-├── app/templates/index.html     # SPA shell
+│       ├── volume_service.py      # Volume discovery, stats, rename/delete
+│       ├── migration_service.py   # rsync orchestration, lockfiles
+│       ├── backup_service.py      # tar archiving, remote restore staging
+│       ├── scheduler_service.py   # APScheduler-backed cron backup jobs
+│       ├── notification_service.py # Telegram notification delivery
+│       ├── remote_api_client.py   # HTTP client for v-helper control API
+│       ├── docker_service.py      # Docker SDK wrapper (minimal use)
+│       └── task_queue.py          # Sequential queue, progress, crash recovery
+├── app/templates/index.html       # SPA shell
 ├── app/static/
 │   ├── main.js             # All client-side logic
 │   └── style.css
@@ -212,6 +234,11 @@ echo "YWRtaW4=" | base64 -d   # should print: admin
 rsync --list-only rsync://host:873/module/
 ```
 
+**v-helper badge missing / create+rename not available on remote pool** — confirm `api_host` and `api_key` are set in the pool config and that the v-helper container is reachable:
+```bash
+curl -H "X-API-Key: your-secret" http://host:8888/health
+```
+
 **Volumes not showing for remote docker host** — verify the rsync module exposes volume directories at the top level (not nested under a subdirectory).
 
 **Task stuck pending / lock file stale** — use the 🧹 Cleanup button in the UI, or:
@@ -223,11 +250,11 @@ curl -X POST -b cookies.txt http://localhost/api/debug/cleanup
 
 ## Releasing
 
-The GitHub Actions workflow builds and pushes on tag:
+The GitHub Actions workflow builds and pushes on semver tag:
 ```bash
-git tag 0.0.7
-git push origin 0.0.7
-# → ghcr.io/zeroomar/v-shipper:0.0.7
+git tag 0.4.2
+git push origin 0.4.2
+# → ghcr.io/zeroomar/v-shipper:0.4.2
 ```
 
 ## Limitations
@@ -235,3 +262,4 @@ git push origin 0.0.7
 - One operation at a time (sequential task queue by design)
 - Single admin account (no RBAC)
 - In-memory session store (cleared on restart)
+- Per-task log buffer is in-memory only — logs are lost on server restart

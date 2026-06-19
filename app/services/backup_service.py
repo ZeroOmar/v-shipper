@@ -153,7 +153,7 @@ class BackupService:
             
             # Verify if requested (verify local copy for remote backups)
             if verify:
-                if not self._verify_backup(archive_path):
+                if not self._verify_backup(task_id, archive_path):
                     error_msg = "Backup verification failed"
                     self.task_queue.complete_task(task_id, success=False, error=error_msg)
                     return False
@@ -168,7 +168,7 @@ class BackupService:
         
         except Exception as e:
             error_msg = f"Backup error: {str(e)}"
-            print(f"[ERROR] Backup failed: {e}", flush=True)
+            print(f"[TASK:{task_id}] Backup failed: {e}", flush=True)
             self.task_queue.complete_task(task_id, success=False, error=error_msg)
             return False
         
@@ -228,26 +228,24 @@ class BackupService:
             return False
 
         except Exception as e:
-            print(f"[ERROR] Archive creation error: {e}", flush=True)
+            print(f"[TASK:{task_id}] Archive creation error: {e}", flush=True)
             return False
     
-    def _verify_backup(self, backup_path: str) -> bool:
+    def _verify_backup(self, task_id: str, backup_path: str) -> bool:
         """Verify backup archive integrity."""
-        
         try:
             result = subprocess.run(["tar", "-tzf", backup_path], capture_output=True)
-            
+
             if result.returncode != 0:
-                print(f"[ERROR] Backup archive is corrupt", flush=True)
+                print(f"[TASK:{task_id}] Backup archive is corrupt: {backup_path}", flush=True)
                 return False
-            
-            # Get archive size
-            archive_size = Path(backup_path).stat().st_size / (1024 ** 2)  # Convert to MB
-            print(f"[INFO] Backup verified: {archive_size:.2f} MB", flush=True)
+
+            archive_size = Path(backup_path).stat().st_size / (1024 ** 2)
+            print(f"[TASK:{task_id}] Backup verified: {archive_size:.2f} MB", flush=True)
             return True
-        
+
         except Exception as e:
-            print(f"[ERROR] Backup verification error: {e}", flush=True)
+            print(f"[TASK:{task_id}] Backup verification error: {e}", flush=True)
             return False
     def restore_backup(self, task_id: str, backup_pool_name: str, backup_file: str,
                        dest_pool_name: str, dest_volume_name: str,
@@ -395,7 +393,7 @@ class BackupService:
                 "current_operation": "Verifying restore",
                 "progress_percent": 93,
             })
-            if not self._verify_backup(str(backup_path)):
+            if not self._verify_backup(task_id, str(backup_path)):
                 self.task_queue.complete_task(task_id, success=False, error="Restore verification failed")
                 return False
 

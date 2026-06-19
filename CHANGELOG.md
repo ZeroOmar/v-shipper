@@ -2,6 +2,16 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.4.2
+
+### Fixed
+
+- **Backup and restore verification logs now appear in the UI task log viewer** — `_verify_backup` was printing with `[ERROR]`/`[INFO]` prefixes instead of `[TASK:{task_id}]`, so verification results, archive corruption messages, and size output were invisible in the log viewer; all log lines now carry the task prefix
+
+### Changed
+
+- **README updated** — added backup schedules, Telegram notifications, and v-helper integration to the features list; added all missing API endpoints (volume create, notifications, refresh); updated the project structure tree; improved the configuration and troubleshooting sections
+
 ## 0.4.1
 
 ### Fixed
