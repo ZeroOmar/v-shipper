@@ -28,10 +28,6 @@ RUN apk add --no-cache \
     ca-certificates \
     tzdata
 
-# Create non-root user
-RUN addgroup -g 1000 appuser && \
-    adduser -D -u 1000 -G appuser appuser
-
 # Set working directory
 WORKDIR /usr/src/vshipper
 
@@ -43,7 +39,7 @@ COPY app/ ./app/
 
 # Create necessary directories
 RUN mkdir -p /tmp/locks /config && \
-    chown -R appuser:appuser /tmp/locks /config
+    chown -R root:root /tmp/locks /config
 
 # Set environment variables
 ENV PATH=/usr/local/bin:$PATH \
@@ -57,8 +53,8 @@ USER root
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:80/api/health').read()" || exit 1
 
-# Expose port
 EXPOSE 80
+VOLUME /config
 
 # Run application
 CMD ["python3", "-m", "uvicorn", "app.app:app", "--host", "0.0.0.0", "--port", "80"]

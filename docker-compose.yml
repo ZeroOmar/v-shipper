@@ -1,36 +1,74 @@
+# Networks
+networks:
+  internal:
+    external: true
+
+# Volumes
+volumes:
+  config:
+    driver: local
+    driver_opts:
+      o: bind
+      type: none
+      device: "/mnt/docker-volumes/v-shipper"
+  dkr-01:
+    driver: local
+    driver_opts:
+      o: bind
+      type: none
+      device: "/mnt/docker-volumes"
+  nas-01:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=z0-nas-01.home.lan,rw,noatime,rsize=8192,wsize=8192,tcp,timeo=14,nfsvers=4
+      device: ":/mnt/TANK/Backups/docker"
+
+# Services
 services:
   v-shipper:
-    build: .
+    image: ghcr.io/zeroomar/v-shipper:0.3.1
     container_name: v-shipper
-    ports:
-      - "8000:80"
+    hostname: v-shipper
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=internal"
+      # service config
+      - "traefik.http.services.v-shipper.loadbalancer.server.port=80"
+      # https entrypoint
+      - "traefik.http.routers.v-shipper-secure.entrypoints=https"
+      - "traefik.http.routers.v-shipper-secure.rule=Host(`v-shipper.home.lan`)"
+      - "traefik.http.routers.v-shipper-secure.tls=true"
+      - "traefik.http.routers.v-shipper-secure.service=v-shipper"
+      - "traefik.http.routers.v-shipper-secure.middlewares=default-headers@file"
     environment:
+      TZ: Africa/Cairo
       VOLUME_MANAGER_CONFIG: |
         docker_hosts:
-          - name: local
-            ip: localhost
-            pool: /mnt/pools/local
+          - name: DKR-01
+            pool: /mnt/DKR-01
             pool_type: local
-          - name: backup
-            ip: localhost
-            pool: /mnt/pools/backup
-            pool_type: local
+          - name: DKR-02
+            pool: /
+            pool_type: remote
+            rsync_module: docker-volumes
+            remote_host: 10.0.13.115:873
         backup_pools:
-          - name: backup1
-            path: /mnt/backups
+          - name: NAS-01
+            pool: /mnt/NAS-01
+          - name: NAS-01-test
+            pool: /
+            pool_type: remote
+            rsync_module: docker-backup
+            remote_host: 10.0.13.21:30026
         web_ui:
           port: 80
           admin_user: admin
           admin_password: YWRtaW4=
     volumes:
-      - ./mnt/pools/local:/mnt/pools/local:rw
-      - ./mnt/pools/backup:/mnt/pools/backup:rw
-      - ./mnt/backups:/mnt/backups:rw
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - config:/config
+      - dkr-01:/mnt/DKR-01
+      - nas-01:/mnt/NAS-01
     networks:
-      - v-shipper-net
-    restart: unless-stopped
-
-networks:
-  v-shipper-net:
-    driver: bridge
+      - internal

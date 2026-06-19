@@ -96,7 +96,7 @@ docker run -d \
   -e VOLUME_MANAGER_CONFIG="$(cat config.yaml)" \
   -v /var/lib/docker/volumes:/mnt/docker_volumes:ro \
   -v /mnt/backups:/mnt/backups:rw \
-  ghcr.io/<owner>/v-shipper:latest
+  ghcr.io/zeroomar/v-shipper:latest
 ```
 
 ## API
@@ -225,9 +225,9 @@ curl -X POST -b cookies.txt http://localhost/api/debug/cleanup
 
 The GitHub Actions workflow builds and pushes on tag:
 ```bash
-git tag v0.0.7
-git push origin v0.0.7
-# → ghcr.io/<owner>/v-shipper:v0.0.7
+git tag 0.0.7
+git push origin 0.0.7
+# → ghcr.io/zeroomar/v-shipper:0.0.7
 ```
 
 ## Limitations

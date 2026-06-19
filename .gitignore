@@ -220,3 +220,4 @@ __marimo__/
 
 test_backups/
 test_volumes/
+docker-compose.yml
