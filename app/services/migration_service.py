@@ -1,12 +1,10 @@
 """Migration service for volume migrations."""
 
-import shutil
 import subprocess
 import time
 from pathlib import Path
 from typing import Optional
 from app.services.task_queue import get_task_queue
-from app.services.remote_api_client import client_for_pool, RemoteApiError
 from app.validation import safe_join
 
 
@@ -67,7 +65,7 @@ class MigrationService:
             if not rsync_success:
                 error_msg = rsync_error or "Rsync failed"
                 self.task_queue.complete_task(task_id, success=False, error=error_msg)
-                self._cleanup_partial_destination(dest_path, dest_pool)
+                self._cleanup_partial_destination(task_id, dest_pool_name, effective_dest)
                 return False
             
             self.task_queue.update_progress(task_id, {
@@ -77,9 +75,10 @@ class MigrationService:
             
             # Verify if requested
             if verify:
-                if not self._verify_migration(source_path, dest_path, source_pool, dest_pool):
+                if not self._verify_migration(task_id, source_path, dest_path, source_pool, dest_pool):
                     error_msg = "Migration verification failed"
                     self.task_queue.complete_task(task_id, success=False, error=error_msg)
+                    self._cleanup_partial_destination(task_id, dest_pool_name, effective_dest)
                     return False
             
             self.task_queue.update_progress(task_id, {
@@ -93,14 +92,19 @@ class MigrationService:
                     "current_operation": "Deleting source volume",
                     "progress_percent": 98
                 })
-                self.volume_service.delete_volume(source_pool_name, source_volume_name)
+                print(f"[TASK:{task_id}] Deleting source: {source_pool_name}/{source_volume_name}", flush=True)
+                deleted = self.volume_service.delete_volume(source_pool_name, source_volume_name)
+                if deleted:
+                    print(f"[TASK:{task_id}] Source deleted successfully", flush=True)
+                else:
+                    print(f"[TASK:{task_id}] Warning: source delete returned failure — manual cleanup may be needed", flush=True)
             
             self.task_queue.complete_task(task_id, success=True)
             return True
         
         except Exception as e:
             error_msg = f"Migration error: {str(e)}"
-            print(f"[ERROR] Migration failed: {e}", flush=True)
+            print(f"[TASK:{task_id}] Migration failed: {e}", flush=True)
             self.task_queue.complete_task(task_id, success=False, error=error_msg)
             return False
         
@@ -168,36 +172,21 @@ class MigrationService:
             print(f"[ERROR] {error_msg}", flush=True)
             return False, error_msg
 
-    def _cleanup_partial_destination(self, dest_path: str, dest_pool: dict):
-        """Remove partially copied destination data on failure."""
+    def _cleanup_partial_destination(self, task_id: str, dest_pool_name: str, dest_volume_name: str):
+        """Remove partial destination volume on failure (local or remote)."""
         try:
-            dest = Path(dest_path)
-            if dest.exists():
-                if dest.is_dir():
-                    shutil.rmtree(dest)
-                else:
-                    dest.unlink()
-                print(f"[INFO] Cleaned up partial destination: {dest_path}", flush=True)
+            print(f"[TASK:{task_id}] Cleaning up partial destination: {dest_pool_name}/{dest_volume_name}", flush=True)
+            deleted = self.volume_service.delete_volume(dest_pool_name, dest_volume_name)
+            if deleted:
+                print(f"[TASK:{task_id}] Partial destination removed", flush=True)
+            else:
+                print(f"[TASK:{task_id}] Warning: could not remove partial destination {dest_pool_name}/{dest_volume_name}", flush=True)
         except Exception as e:
-            print(f"[ERROR] Failed to clean up partial destination {dest_path}: {e}", flush=True)
+            print(f"[TASK:{task_id}] Failed to clean up partial destination {dest_pool_name}/{dest_volume_name}: {e}", flush=True)
 
-    def _get_remote_total_bytes(self, pool: dict, rsync_path: str) -> Optional[int]:
-        """Return total byte size of a remote volume, using API when available."""
-        api = client_for_pool(pool)
-        if api:
-            try:
-                # Parse the volume name from the rsync path (last non-empty component)
-                vol_name = rsync_path.rstrip("/").rsplit("/", 1)[-1]
-                entries = api.ls()
-                for entry in entries:
-                    if entry["name"].rstrip("/") == vol_name and entry["is_dir"]:
-                        # API ls gives stat size of dir entry, not recursive — fall through
-                        break
-                # API doesn't expose recursive byte counts; fall back to rsync listing
-            except RemoteApiError:
-                pass
-        # rsync recursive listing: sum all file sizes
-        success, stdout, _ = self.volume_service._run_rsync_list(rsync_path, recursive=True)
+    def _get_remote_total_bytes(self, rsync_path: str) -> Optional[int]:
+        """Sum all file-content bytes for a remote path via rsync recursive listing."""
+        success, stdout, stderr = self.volume_service._run_rsync_list(rsync_path, recursive=True)
         if not success:
             return None
         total = 0
@@ -207,44 +196,47 @@ class MigrationService:
                 total += p["size"]
         return total
 
-    def _verify_migration(self, source_path: str, dest_path: str,
+    def _verify_migration(self, task_id: str, source_path: str, dest_path: str,
                           source_pool: dict = None, dest_pool: dict = None) -> bool:
-        """Verify that migration was successful by comparing byte totals."""
+        """Verify migration by comparing total file-content bytes in source and dest.
+
+        Uses rsync --list-only for remote paths and _get_dir_size for local paths —
+        both sum raw st_size per file, which matches rsync's own 'total size' figure.
+        """
         try:
             if source_pool and source_pool.get("pool_type") == "remote":
-                source_bytes = self._get_remote_total_bytes(source_pool, source_path)
+                source_bytes = self._get_remote_total_bytes(source_path)
                 if source_bytes is None:
-                    print("[ERROR] Verification failed: could not measure source bytes", flush=True)
+                    print(f"[TASK:{task_id}] Verification failed: could not reach source at {source_path}", flush=True)
                     return False
             else:
-                result = subprocess.run(
-                    ["du", "-sb", source_path], capture_output=True, text=True
-                )
-                source_bytes = int(result.stdout.split()[0]) if result.returncode == 0 else -1
+                source_bytes = self.volume_service._get_dir_size(Path(source_path))
 
             if dest_pool and dest_pool.get("pool_type") == "remote":
-                dest_bytes = self._get_remote_total_bytes(dest_pool, dest_path.rstrip("/") + "/")
+                dest_bytes = self._get_remote_total_bytes(dest_path.rstrip("/") + "/")
                 if dest_bytes is None:
-                    print("[ERROR] Verification failed: could not measure dest bytes", flush=True)
+                    print(f"[TASK:{task_id}] Verification failed: could not reach dest at {dest_path}", flush=True)
                     return False
             else:
-                result = subprocess.run(
-                    ["du", "-sb", dest_path], capture_output=True, text=True
-                )
-                dest_bytes = int(result.stdout.split()[0]) if result.returncode == 0 else -1
+                dest_bytes = self.volume_service._get_dir_size(Path(dest_path))
 
-            if source_bytes < 0 or dest_bytes < 0 or source_bytes != dest_bytes:
+            if source_bytes != dest_bytes:
                 print(
-                    f"[ERROR] Verification failed: source={source_bytes} bytes, dest={dest_bytes} bytes",
+                    f"[TASK:{task_id}] Verification failed: source has {source_bytes:,} bytes ({source_path}),"
+                    f" dest has {dest_bytes:,} bytes ({dest_path})",
                     flush=True,
                 )
                 return False
 
-            print(f"[INFO] Verification passed: {source_bytes} bytes in both locations", flush=True)
+            print(
+                f"[TASK:{task_id}] Verification passed: {source_bytes:,} bytes"
+                f" — source ({source_path}) matches dest ({dest_path})",
+                flush=True,
+            )
             return True
 
         except Exception as e:
-            print(f"[ERROR] Verification error: {e}", flush=True)
+            print(f"[TASK:{task_id}] Verification error for {source_path} → {dest_path}: {e}", flush=True)
             return False
 
 

@@ -2,6 +2,18 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.4.1
+
+### Fixed
+
+- **Create/Rename buttons now visible on v-helper remote pools** — the `isLocalDocker` guard in `displayVolumes` treated all remote pools the same and hid both buttons; it now checks `has_helper` and shows them when the pool has the control API configured
+- **Backup count now shown for remote pool volumes** — both the v-helper API and rsync fallback listing paths in `_list_remote_volumes` were hardcoding `backups=[]`; they now call `_find_backups` like the local path does
+- **Migration verification no longer fails on macOS** — verification was using `du -sb` to measure local byte counts, but the `-b` (bytes) flag is Linux/GNU only and exits non-zero on macOS, causing every local↔remote migration to report verification failure; replaced with `_get_dir_size` which sums `st_size` per file — the same metric rsync reports as "total size"
+- **Destination volume cleaned up when verification fails** — `_cleanup_partial_destination` was not called on verification failure, leaving a partial copy in the destination pool
+- **Remote destination cleanup was a silent no-op** — `_cleanup_partial_destination` used `Path(dest_path).exists()` which is always `False` for rsync URIs, so cleanup never ran for remote destinations even on rsync failure; it now delegates to `delete_volume` which handles both local and remote correctly
+- **Migration log lines now appear in the UI task log viewer** — verification results, cleanup progress, delete-source steps, and migration failure messages were printed without `[TASK:id]` prefix and were invisible in the log viewer; all now carry the prefix
+- **Stale create-volume error message** — failure message still read "or the pool is remote" after remote pools gained create support via v-helper; updated to indicate that a remote pool needs `api_host` configured
+
 ## 0.4.0
 
 ### Added

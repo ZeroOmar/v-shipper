@@ -339,7 +339,7 @@ async def create_volume(request: VolumeCreateRequest, session: dict = Depends(re
             try:
                 success = volume_service.create_volume(request.pool, request.volume_name)
                 if not success:
-                    task_queue.complete_task(task_id, success=False, error="Failed to create volume — it may already exist or the pool is remote")
+                    task_queue.complete_task(task_id, success=False, error="Failed to create volume — it may already exist, or a remote pool requires v-helper api_host to be configured")
                 else:
                     task_queue.complete_task(task_id, success=True)
             except Exception as exc:

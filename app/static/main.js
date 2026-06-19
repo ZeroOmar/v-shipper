@@ -291,7 +291,7 @@ async function loadVolumesForPool(poolName) {
 function displayVolumes(poolName, volumes, warnings = []) {
     const poolMeta = poolsCache[poolName] || {};
     const poolRole = poolMeta.role || 'docker';
-    const isLocalDocker = poolRole !== 'backup' && poolMeta.pool_type !== 'remote';
+    const isLocalDocker = poolRole !== 'backup' && (poolMeta.pool_type !== 'remote' || poolMeta.has_helper);
     const container = document.getElementById('volumesContainer');
 
     // Backup pools get a grouped archive view

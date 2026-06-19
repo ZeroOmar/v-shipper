@@ -172,7 +172,7 @@ class VolumeService:
                         size_bytes=size_bytes,
                         size_loading=size_loading,
                         created_timestamp=int(mtime) if mtime else None,
-                        backups=[],
+                        backups=self._find_backups(volume_name),
                     ))
                 if missing_sizes:
                     self._start_remote_volume_size_refresh(pool_name, pool, missing_sizes)
@@ -217,7 +217,7 @@ class VolumeService:
                     size_bytes=size_bytes,
                     size_loading=size_loading,
                     created_timestamp=parsed.get("created_timestamp"),
-                    backups=[],
+                    backups=self._find_backups(volume_name),
                 ))
 
             if missing_sizes:
