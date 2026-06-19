@@ -2,6 +2,13 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.4.3
+
+### Fixed
+
+- **Delete logs now appear in the UI task log viewer** — `delete_volume` had no `task_id` parameter, so all log lines (including rsync errors) were printed without the `[TASK:id]` prefix and were invisible in the log viewer. The parameter is now threaded through from the delete route and from the migration service (source delete + partial-destination cleanup).
+- **v-helper used for remote volume deletion** — when a remote pool has `api_host` configured, `delete_volume` now calls `POST /fs/rm` on the v-helper API instead of the rsync `--delete` workaround. The rsync workaround runs as the rsync daemon user and fails with `Permission denied` on files owned by Docker container users; the API runs with the correct permissions. Requires v-helper `0.3.0+`. The rsync workaround is kept as a fallback for remote pools without v-helper.
+
 ## 0.4.2
 
 ### Fixed

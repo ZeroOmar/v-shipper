@@ -419,7 +419,7 @@ async def delete_volume(request: DeleteRequest, session: dict = Depends(require_
         task_queue.start_task(task_id)
         def _delete():
             try:
-                success = volume_service.delete_volume(request.pool, request.volume_name)
+                success = volume_service.delete_volume(request.pool, request.volume_name, task_id=task_id)
                 if not success:
                     task_queue.complete_task(task_id, success=False, error="Failed to delete volume")
                 else:

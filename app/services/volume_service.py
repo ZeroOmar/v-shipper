@@ -561,26 +561,40 @@ class VolumeService:
             print(f"[ERROR] Failed to create volume '{volume_name}': {e}", flush=True)
             return False
 
-    def delete_volume(self, pool_name: str, volume_name: str) -> bool:
+    def delete_volume(self, pool_name: str, volume_name: str, task_id: str = None) -> bool:
         """Delete a volume or backup file."""
         pool = self.get_pool_by_name(pool_name)
         if not pool:
             return False
-        
+
+        def _log(level: str, msg: str):
+            prefix = f"[TASK:{task_id}] " if task_id else ""
+            print(f"{prefix}[{level}] {msg}", flush=True)
+
         # Reject names that could inject rsync filter syntax or path traversal.
         try:
             volume_name = validate_name(volume_name, "volume_name")
         except ValueError as e:
-            print(f"[ERROR] Invalid volume name in delete: {e}", flush=True)
+            _log("ERROR", f"Invalid volume name in delete: {e}")
             return False
 
-        # Handle remote pools via rsync
+        # Handle remote pools
         if self._is_remote_pool(pool):
+            api = client_for_pool(pool)
+            if api:
+                try:
+                    api.rm(volume_name)
+                    _log("INFO", f"Deleted {volume_name} from remote pool {pool_name}")
+                    with self.size_lock:
+                        self.size_cache.get(pool_name, {}).pop(volume_name, None)
+                    return True
+                except RemoteApiError as exc:
+                    _log("ERROR", f"Remote delete failed: {exc}")
+                    return False
+
+            # Fallback: rsync workaround (no v-helper). Sync an empty dir to the module
+            # root with include/exclude filters so --delete targets only this volume.
             try:
-                # Sync an empty dir to the MODULE ROOT with include/exclude filters so that
-                # --delete targets only the specific volume directory. rsync will delete the
-                # volume dir and all its contents because it does not exist in the empty source.
-                # Other volumes are excluded from the delete scope and are left untouched.
                 module_target = self._build_rsync_target(pool, trailing_slash=True)
                 with tempfile.TemporaryDirectory() as empty_dir:
                     process = subprocess.Popen(
@@ -598,19 +612,19 @@ class VolumeService:
                     stdout, stderr = process.communicate(timeout=60)
 
                 if process.returncode == 0:
-                    print(f"[INFO] Deleted {volume_name} from remote pool {pool_name}", flush=True)
-                    # Evict size cache so a stale entry doesn't resurface the deleted volume
+                    _log("INFO", f"Deleted {volume_name} from remote pool {pool_name}")
                     with self.size_lock:
                         self.size_cache.get(pool_name, {}).pop(volume_name, None)
                     return True
                 else:
-                    print(f"[WARNING] Remote delete failed: {stderr.strip()}", flush=True)
+                    for line in stderr.strip().splitlines():
+                        _log("WARNING", f"rsync: {line}")
                     return False
             except subprocess.TimeoutExpired:
-                print(f"[ERROR] Delete operation timed out for {volume_name}", flush=True)
+                _log("ERROR", f"Delete operation timed out for {volume_name}")
                 return False
             except Exception as e:
-                print(f"[ERROR] Failed to delete remote volume: {e}", flush=True)
+                _log("ERROR", f"Failed to delete remote volume: {e}")
                 return False
         
         # Handle local pools normally

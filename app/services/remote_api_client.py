@@ -72,6 +72,10 @@ class RemoteApiClient:
         """Rename *src* to *dst* inside VOLUME."""
         self._request("POST", "/fs/rename", {"src": src, "dst": dst})
 
+    def rm(self, name: str) -> None:
+        """Delete the directory or file named *name* inside VOLUME."""
+        self._request("POST", "/fs/rm", {"name": name})
+
 
 def client_for_pool(pool: Dict[str, Any]) -> Optional[RemoteApiClient]:
     """Return a RemoteApiClient if the pool has api_host/api_key, else None."""

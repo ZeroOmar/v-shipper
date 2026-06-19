@@ -93,7 +93,7 @@ class MigrationService:
                     "progress_percent": 98
                 })
                 print(f"[TASK:{task_id}] Deleting source: {source_pool_name}/{source_volume_name}", flush=True)
-                deleted = self.volume_service.delete_volume(source_pool_name, source_volume_name)
+                deleted = self.volume_service.delete_volume(source_pool_name, source_volume_name, task_id=task_id)
                 if deleted:
                     print(f"[TASK:{task_id}] Source deleted successfully", flush=True)
                 else:
@@ -176,7 +176,7 @@ class MigrationService:
         """Remove partial destination volume on failure (local or remote)."""
         try:
             print(f"[TASK:{task_id}] Cleaning up partial destination: {dest_pool_name}/{dest_volume_name}", flush=True)
-            deleted = self.volume_service.delete_volume(dest_pool_name, dest_volume_name)
+            deleted = self.volume_service.delete_volume(dest_pool_name, dest_volume_name, task_id=task_id)
             if deleted:
                 print(f"[TASK:{task_id}] Partial destination removed", flush=True)
             else:
