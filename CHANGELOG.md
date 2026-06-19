@@ -2,6 +2,20 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.4.0
+
+### Added
+
+- **v-helper control API integration** — remote pools can now declare `api_host` and `api_key` config fields to connect to a [v-helper](https://github.com/ZeroOmar/v-helper) `0.2.0+` sidecar. When configured, v-shipper uses v-helper's HTTP API for operations that rsync cannot perform: create volume (`POST /fs/mkdir`), rename volume (`POST /fs/rename`), real disk free space (`GET /fs/disk`), and accurate modification timestamps (`GET /fs/ls`). All rsync-based file transfers are unchanged
+- **Create volume on remote pools** — creating a new volume directory on a remote pool now works when v-helper is configured (previously returned an error)
+- **Rename volume on remote pools** — renaming a volume on a remote pool now works when v-helper is configured (previously silently failed)
+- **Real disk free space for remote pools** — the pool stats card for a v-helper-enabled remote pool now shows actual `Used` + `Free` with a usage bar, instead of showing only total-used-bytes with 0 free
+- **v-helper badge on pool cards** — remote pools with `api_host` configured show a "v-helper" pill badge in the pool sidebar so it's clear which pools have full capabilities
+
+### Changed
+
+- **Migration verification now compares bytes** — `_verify_migration` was comparing file counts (via rsync `--list-only`), which missed truncated files. It now compares total byte sizes (`du -sb` for local, recursive rsync file-size sum for remote), giving a more accurate integrity check
+
 ## 0.3.1
 
 ### Changed

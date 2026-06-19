@@ -26,6 +26,8 @@ class _PoolBase(BaseModel):
     pool_type: Literal["local", "remote"] = "local"
     remote_host: Optional[str] = None
     rsync_module: Optional[str] = None
+    api_host: Optional[str] = None
+    api_key: Optional[str] = None
 
     @field_validator("name")
     @classmethod
@@ -43,6 +45,12 @@ class _PoolBase(BaseModel):
             validate_name(self.rsync_module, "rsync_module")
         else:
             validate_pool_path(self.pool, "pool path")
+        if self.api_host:
+            validate_remote_host(self.api_host)
+            if not self.api_key:
+                raise ValueError(
+                    f"pool '{self.name}' has api_host but is missing api_key"
+                )
         return self
 
 
@@ -122,6 +130,7 @@ class PoolStats(BaseModel):
     available_gb: float
     usage_percent: float
     reachable: bool = True
+    has_helper: bool = False
     error: Optional[str] = None
 
 
@@ -309,7 +318,7 @@ class VolumeCreateRequest(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str = "ok"
-    version: str = "0.3.1"
+    version: str = "0.4.0"
 
 
 # ── Backup Schedule Models ────────────────────────────────────────────────────

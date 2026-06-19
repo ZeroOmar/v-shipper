@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Optional
 from app.services.task_queue import get_task_queue
+from app.services.remote_api_client import client_for_pool, RemoteApiError
 from app.validation import safe_join
 
 
@@ -180,36 +181,66 @@ class MigrationService:
         except Exception as e:
             print(f"[ERROR] Failed to clean up partial destination {dest_path}: {e}", flush=True)
 
+    def _get_remote_total_bytes(self, pool: dict, rsync_path: str) -> Optional[int]:
+        """Return total byte size of a remote volume, using API when available."""
+        api = client_for_pool(pool)
+        if api:
+            try:
+                # Parse the volume name from the rsync path (last non-empty component)
+                vol_name = rsync_path.rstrip("/").rsplit("/", 1)[-1]
+                entries = api.ls()
+                for entry in entries:
+                    if entry["name"].rstrip("/") == vol_name and entry["is_dir"]:
+                        # API ls gives stat size of dir entry, not recursive — fall through
+                        break
+                # API doesn't expose recursive byte counts; fall back to rsync listing
+            except RemoteApiError:
+                pass
+        # rsync recursive listing: sum all file sizes
+        success, stdout, _ = self.volume_service._run_rsync_list(rsync_path, recursive=True)
+        if not success:
+            return None
+        total = 0
+        for line in stdout.splitlines():
+            p = self.volume_service._parse_rsync_list_line(line)
+            if p and not p["is_dir"]:
+                total += p["size"]
+        return total
+
     def _verify_migration(self, source_path: str, dest_path: str,
                           source_pool: dict = None, dest_pool: dict = None) -> bool:
-        """Verify that migration was successful."""
+        """Verify that migration was successful by comparing byte totals."""
         try:
             if source_pool and source_pool.get("pool_type") == "remote":
-                # Count files via recursive rsync listing for remote source
-                success, stdout, _ = self.volume_service._run_rsync_list(source_path, recursive=True)
-                source_count = sum(
-                    1 for line in stdout.splitlines()
-                    if (p := self.volume_service._parse_rsync_list_line(line)) and not p["is_dir"]
-                ) if success else -1
+                source_bytes = self._get_remote_total_bytes(source_pool, source_path)
+                if source_bytes is None:
+                    print("[ERROR] Verification failed: could not measure source bytes", flush=True)
+                    return False
             else:
-                result = subprocess.run(["find", source_path, "-type", "f"], capture_output=True, text=True)
-                source_count = len(result.stdout.splitlines()) if result.returncode == 0 else -1
+                result = subprocess.run(
+                    ["du", "-sb", source_path], capture_output=True, text=True
+                )
+                source_bytes = int(result.stdout.split()[0]) if result.returncode == 0 else -1
 
             if dest_pool and dest_pool.get("pool_type") == "remote":
-                success, stdout, _ = self.volume_service._run_rsync_list(dest_path.rstrip('/') + '/', recursive=True)
-                dest_count = sum(
-                    1 for line in stdout.splitlines()
-                    if (p := self.volume_service._parse_rsync_list_line(line)) and not p["is_dir"]
-                ) if success else -1
+                dest_bytes = self._get_remote_total_bytes(dest_pool, dest_path.rstrip("/") + "/")
+                if dest_bytes is None:
+                    print("[ERROR] Verification failed: could not measure dest bytes", flush=True)
+                    return False
             else:
-                result = subprocess.run(["find", dest_path, "-type", "f"], capture_output=True, text=True)
-                dest_count = len(result.stdout.splitlines()) if result.returncode == 0 else -1
+                result = subprocess.run(
+                    ["du", "-sb", dest_path], capture_output=True, text=True
+                )
+                dest_bytes = int(result.stdout.split()[0]) if result.returncode == 0 else -1
 
-            if source_count != dest_count or source_count < 0:
-                print(f"[ERROR] Verification failed: source={source_count} files, dest={dest_count} files", flush=True)
+            if source_bytes < 0 or dest_bytes < 0 or source_bytes != dest_bytes:
+                print(
+                    f"[ERROR] Verification failed: source={source_bytes} bytes, dest={dest_bytes} bytes",
+                    flush=True,
+                )
                 return False
 
-            print(f"[INFO] Verification passed: {source_count} files found in both locations", flush=True)
+            print(f"[INFO] Verification passed: {source_bytes} bytes in both locations", flush=True)
             return True
 
         except Exception as e:

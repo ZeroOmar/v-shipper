@@ -210,20 +210,25 @@ function displayPools(pools) {
             : 'Loading...';
 
         const isRemote = pool.pool_type === 'remote';
-        const statsHtml = isRemote
-            ? `<div class="stat"><div class="stat-label">Used</div><div class="stat-value">${pool.total_gb.toFixed(1)} GB</div></div>`
-            : `<div class="stat"><div class="stat-label">Used</div><div class="stat-value">${pool.used_gb.toFixed(1)} GB</div></div>
-               <div class="stat"><div class="stat-label">Free</div><div class="stat-value">${pool.available_gb.toFixed(1)} GB</div></div>`;
-        const usageBarHtml = isRemote ? '' : `
+        const hasHelper = !!pool.has_helper;
+        const remoteHasFullStats = isRemote && hasHelper;
+
+        const statsHtml = (!isRemote || remoteHasFullStats)
+            ? `<div class="stat"><div class="stat-label">Used</div><div class="stat-value">${pool.used_gb.toFixed(1)} GB</div></div>
+               <div class="stat"><div class="stat-label">Free</div><div class="stat-value">${pool.available_gb.toFixed(1)} GB</div></div>`
+            : `<div class="stat"><div class="stat-label">Used</div><div class="stat-value">${pool.total_gb.toFixed(1)} GB</div></div>`;
+        const usageBarHtml = (!isRemote || remoteHasFullStats) ? `
             <div class="progress-bar" style="margin-top: 8px;">
                 <div class="progress-fill" style="width: ${Math.min(usagePercent, 100)}%"></div>
-            </div>`;
+            </div>` : '';
         const reachableHtml = pool.reachable === false
             ? `<div class="pool-unreachable">⚠ Unreachable</div>` : '';
+        const helperBadgeHtml = hasHelper
+            ? `<span class="pool-helper-badge">v-helper</span>` : '';
 
         poolEl.innerHTML = `
             <div style="cursor: pointer;" data-action="select-pool" data-pool="${escapeHtml(pool.name)}">
-                <div class="pool-name">${escapeHtml(pool.name)}</div>
+                <div class="pool-name"><span class="pool-name-text">${escapeHtml(pool.name)}</span>${helperBadgeHtml}</div>
                 <div class="pool-type">${pool.role === 'backup' ? 'Backup' : 'Docker'} · ${escapeHtml(pool.pool_type)}</div>
                 <div class="pool-counts">${countLabel}</div>
                 ${reachableHtml}

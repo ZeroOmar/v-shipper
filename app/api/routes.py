@@ -143,7 +143,9 @@ async def list_pools(session: dict = Depends(require_auth)):
                 "pool_type": host.pool_type,
                 "remote_host": host.remote_host,
                 "rsync_module": host.rsync_module,
-                "role": "docker"
+                "api_host": host.api_host,
+                "api_key": host.api_key,
+                "role": "docker",
             }
             stats = volume_service.get_pool_stats(pool_info)
             pools_stats.append(stats)
@@ -157,7 +159,9 @@ async def list_pools(session: dict = Depends(require_auth)):
                 "pool_type": backup.pool_type,
                 "remote_host": backup.remote_host,
                 "rsync_module": backup.rsync_module,
-                "role": "backup"
+                "api_host": backup.api_host,
+                "api_key": backup.api_key,
+                "role": "backup",
             }
             stats = volume_service.get_pool_stats(pool_info)
             pools_stats.append(stats)

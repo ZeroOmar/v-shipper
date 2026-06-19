@@ -39,7 +39,9 @@ class ConfigManager:
                     pool=host_config["pool"],
                     pool_type=host_config.get("pool_type", "local"),
                     remote_host=host_config.get("remote_host"),
-                    rsync_module=host_config.get("rsync_module")
+                    rsync_module=host_config.get("rsync_module"),
+                    api_host=host_config.get("api_host"),
+                    api_key=host_config.get("api_key"),
                 )
                 docker_hosts.append(host)
 
@@ -53,7 +55,9 @@ class ConfigManager:
                     pool=backup_config.get("pool") or backup_config.get("path"),
                     pool_type=backup_config.get("pool_type", "local"),
                     remote_host=backup_config.get("remote_host"),
-                    rsync_module=backup_config.get("rsync_module")
+                    rsync_module=backup_config.get("rsync_module"),
+                    api_host=backup_config.get("api_host"),
+                    api_key=backup_config.get("api_key"),
                 )
                 backup_pools.append(backup)
             
@@ -104,8 +108,8 @@ class ConfigManager:
         try:
             with open(self.config_file_path, 'w') as f:
                 config_dict = {
-                    "docker_hosts": [h.model_dump() for h in self.config.docker_hosts],
-                    "backup_pools": [b.model_dump() for b in self.config.backup_pools],
+                    "docker_hosts": [h.model_dump(exclude={"api_key"}) for h in self.config.docker_hosts],
+                    "backup_pools": [b.model_dump(exclude={"api_key"}) for b in self.config.backup_pools],
                     "web_ui": self.config.web_ui.model_dump()
                 }
                 yaml.dump(config_dict, f)

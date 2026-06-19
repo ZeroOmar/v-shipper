@@ -11,6 +11,7 @@ from threading import Lock, Thread
 from typing import Any, List, Dict, Optional
 from app.models import VolumeInfo, PoolStats
 from app.services.task_queue import get_task_queue
+from app.services.remote_api_client import RemoteApiClient, RemoteApiError, client_for_pool
 from app.validation import validate_name, safe_join
 
 
@@ -35,7 +36,9 @@ class VolumeService:
                     "pool_type": host.pool_type,
                     "remote_host": host.remote_host,
                     "rsync_module": host.rsync_module,
-                    "role": "docker"
+                    "api_host": host.api_host,
+                    "api_key": host.api_key,
+                    "role": "docker",
                 }
 
         for backup in self.config.backup_pools:
@@ -47,7 +50,9 @@ class VolumeService:
                     "pool_type": backup.pool_type,
                     "remote_host": backup.remote_host,
                     "rsync_module": backup.rsync_module,
-                    "role": "backup"
+                    "api_host": backup.api_host,
+                    "api_key": backup.api_key,
+                    "role": "backup",
                 }
 
         return None
@@ -62,7 +67,9 @@ class VolumeService:
                     "pool_type": backup.pool_type,
                     "remote_host": backup.remote_host,
                     "rsync_module": backup.rsync_module,
-                    "role": "backup"
+                    "api_host": backup.api_host,
+                    "api_key": backup.api_key,
+                    "role": "backup",
                 }
         return None
 
@@ -132,9 +139,48 @@ class VolumeService:
             return None
 
     def _list_remote_volumes(self, pool: Dict) -> tuple[List[VolumeInfo], List[str]]:
-        """List volumes for a remote pool using rsync daemon listing."""
+        """List volumes for a remote pool, preferring the v-helper API when available."""
         pool_name = pool.get("name", "")
         warnings = []
+
+        api = client_for_pool(pool)
+        if api:
+            try:
+                entries = api.ls()
+                target = self._build_rsync_target(pool)
+                volumes = []
+                missing_sizes = []
+                for entry in entries:
+                    if not entry.get("is_dir"):
+                        continue
+                    volume_name = entry["name"].rstrip("/")
+                    if not volume_name or volume_name == ".":
+                        continue
+                    cached_bytes = self._get_cached_size(pool_name, volume_name)
+                    if cached_bytes is None:
+                        size_loading = True
+                        size_bytes = 0
+                        missing_sizes.append(volume_name)
+                    else:
+                        size_loading = False
+                        size_bytes = cached_bytes
+                    mtime = entry.get("mtime_epoch")
+                    volumes.append(VolumeInfo(
+                        name=volume_name,
+                        path=f"{target}{volume_name}/",
+                        size_gb=size_bytes / (1024 ** 3),
+                        size_bytes=size_bytes,
+                        size_loading=size_loading,
+                        created_timestamp=int(mtime) if mtime else None,
+                        backups=[],
+                    ))
+                if missing_sizes:
+                    self._start_remote_volume_size_refresh(pool_name, pool, missing_sizes)
+                return sorted(volumes, key=lambda v: v.name), warnings
+            except RemoteApiError as exc:
+                warnings.append(f"v-helper API unavailable, falling back to rsync: {exc}")
+
+        # Fallback: rsync daemon listing
         try:
             target = self._build_rsync_target(pool)
             success, stdout, stderr = self._run_rsync_list(target)
@@ -149,11 +195,9 @@ class VolumeService:
                 if not parsed or not parsed["is_dir"]:
                     continue
 
-                # Strip trailing slash and skip the module root entry
                 volume_name = parsed["name"].rstrip("/")
                 if not volume_name or volume_name == ".":
                     continue
-                # Skip nested paths (e.g. "volume/_data")
                 if "/" in volume_name:
                     continue
 
@@ -173,7 +217,7 @@ class VolumeService:
                     size_bytes=size_bytes,
                     size_loading=size_loading,
                     created_timestamp=parsed.get("created_timestamp"),
-                    backups=[]
+                    backups=[],
                 ))
 
             if missing_sizes:
@@ -264,30 +308,61 @@ class VolumeService:
             if pool.get("pool_type") == "remote":
                 reachable = True
                 error = None
-                total_bytes = 0
-                try:
-                    target = self._build_rsync_target(pool)
-                    success, _, stderr = self._run_rsync_list(target)
-                    if not success:
+                total_bytes = used_bytes = free_bytes = 0
+                has_helper = bool(pool.get("api_host"))
+
+                api = client_for_pool(pool)
+                if api:
+                    try:
+                        disk = api.disk()
+                        total_bytes = disk["total_bytes"]
+                        used_bytes = disk["used_bytes"]
+                        free_bytes = disk["free_bytes"]
+                    except RemoteApiError as exc:
+                        # API unreachable — fall back to rsync size estimation
+                        has_helper = False
+                        error = str(exc)
+                        try:
+                            target = self._build_rsync_target(pool)
+                            success, _, stderr = self._run_rsync_list(target)
+                            if not success:
+                                reachable = False
+                                error = stderr
+                            else:
+                                used_bytes = self._get_remote_pool_total_size(pool)
+                                total_bytes = used_bytes
+                        except Exception as exc2:
+                            reachable = False
+                            error = str(exc2)
+                else:
+                    try:
+                        target = self._build_rsync_target(pool)
+                        success, _, stderr = self._run_rsync_list(target)
+                        if not success:
+                            reachable = False
+                            error = stderr
+                        else:
+                            used_bytes = self._get_remote_pool_total_size(pool)
+                            total_bytes = used_bytes
+                    except Exception as exc:
                         reachable = False
-                        error = stderr
-                    else:
-                        total_bytes = self._get_remote_pool_total_size(pool)
-                except Exception as exc:
-                    reachable = False
-                    error = str(exc)
+                        error = str(exc)
 
                 total_gb = total_bytes / (1024 ** 3)
+                used_gb = used_bytes / (1024 ** 3)
+                free_gb = free_bytes / (1024 ** 3)
+                usage_pct = (used_bytes / total_bytes * 100) if total_bytes > 0 else 0
                 return PoolStats(
                     name=pool["name"],
                     pool_type=pool.get("pool_type", "remote"),
                     role=pool.get("role", "docker"),
                     total_gb=round(total_gb, 2),
-                    used_gb=round(total_gb, 2),
-                    available_gb=0,
-                    usage_percent=0,
+                    used_gb=round(used_gb, 2),
+                    available_gb=round(free_gb, 2),
+                    usage_percent=round(usage_pct, 2),
                     reachable=reachable,
-                    error=error
+                    has_helper=has_helper,
+                    error=error,
                 )
 
             stat_info = os.statvfs(pool_path)
@@ -410,6 +485,23 @@ class VolumeService:
         if not pool:
             return False
 
+        if self._is_remote_pool(pool):
+            api = client_for_pool(pool)
+            if not api:
+                print(f"[ERROR] Cannot rename volume in remote pool '{pool_name}' — no v-helper api_host configured", flush=True)
+                return False
+            try:
+                api.rename(old_name, new_name)
+                print(f"[INFO] Renamed remote volume {old_name} → {new_name} in {pool_name}", flush=True)
+                with self.size_lock:
+                    pool_sizes = self.size_cache.get(pool_name, {})
+                    if old_name in pool_sizes:
+                        pool_sizes[new_name] = pool_sizes.pop(old_name)
+                return True
+            except RemoteApiError as exc:
+                print(f"[ERROR] Remote rename failed: {exc}", flush=True)
+                return False
+
         try:
             old_path = safe_join(pool["path"], old_name)
             new_path = safe_join(pool["path"], new_name)
@@ -421,11 +513,11 @@ class VolumeService:
             if not old_path.exists():
                 print(f"[ERROR] Volume {old_name} not found", flush=True)
                 return False
-            
+
             if new_path.exists():
                 print(f"[ERROR] Volume {new_name} already exists", flush=True)
                 return False
-            
+
             old_path.rename(new_path)
             print(f"[INFO] Renamed volume {old_name} to {new_name}", flush=True)
             return True
@@ -434,13 +526,23 @@ class VolumeService:
             return False
     
     def create_volume(self, pool_name: str, volume_name: str) -> bool:
-        """Create a new volume directory with 777 permissions (local pools only)."""
+        """Create a new volume directory."""
         pool = self.get_pool_by_name(pool_name)
         if not pool:
             return False
+
         if self._is_remote_pool(pool):
-            print(f"[ERROR] Cannot create volume in remote pool '{pool_name}'", flush=True)
-            return False
+            api = client_for_pool(pool)
+            if not api:
+                print(f"[ERROR] Cannot create volume in remote pool '{pool_name}' — no v-helper api_host configured", flush=True)
+                return False
+            try:
+                api.mkdir(volume_name)
+                print(f"[INFO] Created remote volume '{volume_name}' in '{pool_name}'", flush=True)
+                return True
+            except RemoteApiError as exc:
+                print(f"[ERROR] Remote mkdir failed: {exc}", flush=True)
+                return False
 
         try:
             new_path = safe_join(pool["path"], volume_name)
