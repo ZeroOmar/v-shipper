@@ -2,6 +2,21 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.4.5
+
+### Added
+
+- **v-helper version reporting and mismatch warnings** — v-shipper now reads each connected v-helper's version (via v-helper's new `GET /version`) and flags version drift: a v-helper older than v-shipper gets an "out of date" pill on its pool card, and a v-helper newer than v-shipper shows an "out of date" pill in the v-shipper header. v-shipper and v-helper now share a single version line and bump together on each release.
+
+### Changed
+
+- **Remote volume sizes are measured via v-helper when available** — `_get_remote_size` (used by both the volume-listing size refresh and migration verification) now calls v-helper's `GET /fs/size` for an exact on-filesystem byte count, falling back to rsync `--list-only` only when v-helper is absent or unreachable. This removes a redundant rsync round-trip on v-helper pools.
+- **App version is now a single source of truth** — `app/__init__.py:__version__`; `HealthResponse` reads from it instead of a hardcoded literal.
+
+### Fixed
+
+- **Migration verification no longer fails over a few stray bytes** — source (local) and destination (remote) byte totals were measured differently: the local walk followed symlinks and counted regular files, while the rsync `--list-only` path counted symlinks as their target-string length, so verification could fail with e.g. "source has 162,535,613 bytes, dest has 162,535,708 bytes". Both sides now sum regular-file bytes only and exclude symlinks — the local `_get_dir_size` and v-helper's `/fs/size` use identical logic — so totals match. Requires v-helper `0.4.5+` for the API path; older or absent v-helper falls back to rsync.
+
 ## 0.4.4
 
 ### Fixed

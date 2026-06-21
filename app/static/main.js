@@ -12,6 +12,7 @@ let activePool = null;
 let taskHistory = []; // Keep track of recent tasks
 let taskPage = 0; // Current task list page (100 per page)
 let consecutiveLoadFailures = 0; // Track network failures
+let appVersion = null; // v-shipper's own version, fetched once from /api/health
 
 // Configuration
 const POLL_INTERVAL = 2000; // 2 seconds
@@ -125,10 +126,34 @@ function showDashboard() {
     document.getElementById('loginScreen').classList.remove('active');
     document.getElementById('dashboard').classList.add('active');
     document.getElementById('currentUser').textContent = currentUser || 'admin';
+    loadAppVersion();
     loadTaskHistory();
     loadPools();
     startAutoRefresh();
     switchMobileTab('pools');
+}
+
+// Compare two dotted version strings ("x.y.z"). Returns -1 / 0 / 1.
+function compareVersions(a, b) {
+    const pa = String(a).split('.').map(n => parseInt(n, 10) || 0);
+    const pb = String(b).split('.').map(n => parseInt(n, 10) || 0);
+    const len = Math.max(pa.length, pb.length);
+    for (let i = 0; i < len; i++) {
+        const x = pa[i] || 0, y = pb[i] || 0;
+        if (x < y) return -1;
+        if (x > y) return 1;
+    }
+    return 0;
+}
+
+// Fetch v-shipper's own version once, then re-render pools so version pills appear.
+async function loadAppVersion() {
+    try {
+        const res = await fetch(`${API_BASE}/health`);
+        const d = await res.json();
+        appVersion = d.version || null;
+    } catch (_) { /* leave appVersion null; pills simply won't render */ }
+    if (Object.keys(poolsCache).length) displayPools(Object.values(poolsCache));
 }
 
 function startAutoRefresh() {
@@ -195,7 +220,9 @@ async function loadPools() {
 function displayPools(pools) {
     const container = document.getElementById('poolsList');
     container.innerHTML = '';
-    
+
+    let shipperBehind = false; // true if any connected v-helper is newer than v-shipper
+
     pools.forEach(pool => {
         const poolEl = document.createElement('div');
         poolEl.className = 'pool-item';
@@ -226,9 +253,27 @@ function displayPools(pools) {
         const helperBadgeHtml = hasHelper
             ? `<span class="pool-helper-badge">v-helper</span>` : '';
 
+        // Version comparison: a connected v-helper older than v-shipper gets an
+        // "out of date" pill on its card; a newer one flags v-shipper itself
+        // (handled after the loop via the header pill). A reachable helper with
+        // no reported version predates the /version endpoint, so it is older.
+        let helperOutdated = false;
+        if (hasHelper && appVersion) {
+            if (!pool.helper_version) {
+                helperOutdated = true;
+            } else {
+                const cmp = compareVersions(pool.helper_version, appVersion);
+                if (cmp < 0) helperOutdated = true;
+                else if (cmp > 0) shipperBehind = true;
+            }
+        }
+        const updatePillHtml = helperOutdated
+            ? `<span class="pool-update-pill" title="v-helper ${escapeHtml(pool.helper_version || 'unknown')} is older than v-shipper ${escapeHtml(appVersion || '')} — update v-helper">out of date</span>`
+            : '';
+
         poolEl.innerHTML = `
             <div style="cursor: pointer;" data-action="select-pool" data-pool="${escapeHtml(pool.name)}">
-                <div class="pool-name"><span class="pool-name-text">${escapeHtml(pool.name)}</span>${helperBadgeHtml}</div>
+                <div class="pool-name"><span class="pool-name-text">${escapeHtml(pool.name)}</span>${helperBadgeHtml}${updatePillHtml}</div>
                 <div class="pool-type">${pool.role === 'backup' ? 'Backup' : 'Docker'} · ${escapeHtml(pool.pool_type)}</div>
                 <div class="pool-counts">${countLabel}</div>
                 ${reachableHtml}
@@ -239,6 +284,14 @@ function displayPools(pools) {
         
         container.appendChild(poolEl);
     });
+
+    const hdrPill = document.getElementById('shipperUpdatePill');
+    if (hdrPill) {
+        hdrPill.style.display = shipperBehind ? '' : 'none';
+        if (shipperBehind) {
+            hdrPill.title = `A connected v-helper is newer than v-shipper ${appVersion || ''} — update v-shipper`;
+        }
+    }
 }
 
 function selectPool(poolName) {

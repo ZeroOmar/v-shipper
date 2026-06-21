@@ -286,7 +286,23 @@ class VolumeService:
             return [], warnings
 
     def _get_remote_size(self, pool: Dict, volume_name: str) -> Optional[int]:
-        """Get total size of a remote volume or file via rsync listing."""
+        """Get total size of a remote volume or file.
+
+        Prefers the v-helper API, which measures bytes on the real filesystem
+        with the same semantics as the local ``_get_dir_size`` (recursive,
+        regular files only, symlinks excluded) — so local↔remote migration
+        verification compares like for like. Falls back to rsync ``--list-only``
+        when v-helper is not configured or unreachable. (The rsync listing
+        counts symlinks as their target-string length, which is why it can
+        disagree with the local total by a handful of bytes.)
+        """
+        api = client_for_pool(pool)
+        if api:
+            try:
+                return api.size(volume_name)
+            except RemoteApiError as exc:
+                print(f"[WARNING] v-helper size failed for {volume_name}, falling back to rsync: {exc}", flush=True)
+
         try:
             target = self._build_rsync_target(pool, volume_name, trailing_slash=True)
             success, stdout, stderr = self._run_rsync_list(target, recursive=True)
@@ -333,6 +349,7 @@ class VolumeService:
                 error = None
                 total_bytes = used_bytes = free_bytes = 0
                 has_helper = bool(pool.get("api_host"))
+                helper_version = None
 
                 api = client_for_pool(pool)
                 if api:
@@ -341,6 +358,8 @@ class VolumeService:
                         total_bytes = disk["total_bytes"]
                         used_bytes = disk["used_bytes"]
                         free_bytes = disk["free_bytes"]
+                        # Best-effort; None for a v-helper too old to expose /version
+                        helper_version = api.version()
                     except RemoteApiError as exc:
                         # API unreachable — fall back to rsync size estimation
                         has_helper = False
@@ -385,6 +404,7 @@ class VolumeService:
                     usage_percent=round(usage_pct, 2),
                     reachable=reachable,
                     has_helper=has_helper,
+                    helper_version=helper_version,
                     error=error,
                 )
 
@@ -746,12 +766,20 @@ class VolumeService:
             return None
     
     def _get_dir_size(self, path: Path) -> int:
-        """Calculate directory size in bytes."""
+        """Calculate directory size in bytes.
+
+        Sums regular-file bytes only; symlinks are not followed and not counted,
+        matching v-helper's ``/fs/size`` so local and remote totals are
+        directly comparable.
+        """
         total_size = 0
         try:
             for entry in path.rglob('*'):
-                if entry.is_file():
-                    total_size += entry.stat().st_size
+                try:
+                    if entry.is_file() and not entry.is_symlink():
+                        total_size += entry.stat().st_size
+                except OSError:
+                    pass
         except Exception:
             pass
         return total_size

@@ -8,6 +8,7 @@ failures — callers can catch it and fall back to rsync-based behaviour.
 import json
 import urllib.request
 import urllib.error
+import urllib.parse
 from typing import Dict, List, Any, Optional
 
 
@@ -56,6 +57,17 @@ class RemoteApiClient:
         except RemoteApiError:
             return False
 
+    def version(self) -> Optional[str]:
+        """Return the v-helper version string.
+
+        Returns None if the endpoint is missing (a v-helper that predates the
+        ``/version`` endpoint, i.e. an old one) or otherwise unavailable.
+        """
+        try:
+            return self._request("GET", "/version").get("version")
+        except RemoteApiError:
+            return None
+
     def disk(self) -> Dict[str, int]:
         """Return disk usage: {total_bytes, used_bytes, free_bytes}."""
         return self._request("GET", "/fs/disk")
@@ -63,6 +75,16 @@ class RemoteApiClient:
     def ls(self) -> List[Dict[str, Any]]:
         """List VOLUME entries: [{name, size_bytes, mtime_epoch, is_dir}]."""
         return self._request("GET", "/fs/ls")
+
+    def size(self, name: str) -> int:
+        """Return total bytes of regular files under *name* (recursive).
+
+        Uses v-helper's real filesystem access with the same semantics as
+        v-shipper's local ``_get_dir_size`` (symlinks excluded), so size
+        comparisons across local and remote pools are like for like.
+        """
+        path = "/fs/size?name=" + urllib.parse.quote(name, safe="")
+        return int(self._request("GET", path)["size_bytes"])
 
     def mkdir(self, name: str) -> None:
         """Create a directory named *name* inside VOLUME."""

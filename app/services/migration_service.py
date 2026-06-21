@@ -75,7 +75,8 @@ class MigrationService:
             
             # Verify if requested
             if verify:
-                if not self._verify_migration(task_id, source_path, dest_path, source_pool, dest_pool):
+                if not self._verify_migration(task_id, source_path, dest_path, source_pool, dest_pool,
+                                              source_volume_name, effective_dest):
                     error_msg = "Migration verification failed"
                     self.task_queue.complete_task(task_id, success=False, error=error_msg)
                     self._cleanup_partial_destination(task_id, dest_pool_name, effective_dest)
@@ -185,28 +186,19 @@ class MigrationService:
         except Exception as e:
             print(f"[TASK:{task_id}] Failed to clean up partial destination {dest_pool_name}/{dest_volume_name}: {e}", flush=True)
 
-    def _get_remote_total_bytes(self, rsync_path: str) -> Optional[int]:
-        """Sum all file-content bytes for a remote path via rsync recursive listing."""
-        success, stdout, stderr = self.volume_service._run_rsync_list(rsync_path, recursive=True)
-        if not success:
-            return None
-        total = 0
-        for line in stdout.splitlines():
-            p = self.volume_service._parse_rsync_list_line(line)
-            if p and not p["is_dir"]:
-                total += p["size"]
-        return total
-
     def _verify_migration(self, task_id: str, source_path: str, dest_path: str,
-                          source_pool: dict = None, dest_pool: dict = None) -> bool:
+                          source_pool: dict = None, dest_pool: dict = None,
+                          source_volume_name: str = None, dest_volume_name: str = None) -> bool:
         """Verify migration by comparing total file-content bytes in source and dest.
 
-        Uses rsync --list-only for remote paths and _get_dir_size for local paths —
-        both sum raw st_size per file, which matches rsync's own 'total size' figure.
+        Remote totals come from ``volume_service._get_remote_size`` (v-helper
+        when available, else rsync); local totals from ``_get_dir_size``. Both
+        sum regular-file bytes only and exclude symlinks, so the two sides are
+        measured identically.
         """
         try:
             if source_pool and source_pool.get("pool_type") == "remote":
-                source_bytes = self._get_remote_total_bytes(source_path)
+                source_bytes = self.volume_service._get_remote_size(source_pool, source_volume_name)
                 if source_bytes is None:
                     print(f"[TASK:{task_id}] Verification failed: could not reach source at {source_path}", flush=True)
                     return False
@@ -214,7 +206,7 @@ class MigrationService:
                 source_bytes = self.volume_service._get_dir_size(Path(source_path))
 
             if dest_pool and dest_pool.get("pool_type") == "remote":
-                dest_bytes = self._get_remote_total_bytes(dest_path.rstrip("/") + "/")
+                dest_bytes = self.volume_service._get_remote_size(dest_pool, dest_volume_name)
                 if dest_bytes is None:
                     print(f"[TASK:{task_id}] Verification failed: could not reach dest at {dest_path}", flush=True)
                     return False

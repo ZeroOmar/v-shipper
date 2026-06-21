@@ -18,6 +18,8 @@ from app.validation import (
     MAX_CREDENTIAL_LEN,
 )
 
+from app import __version__
+
 
 class _PoolBase(BaseModel):
     """Shared validation for docker/backup pool config entries."""
@@ -131,6 +133,7 @@ class PoolStats(BaseModel):
     usage_percent: float
     reachable: bool = True
     has_helper: bool = False
+    helper_version: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -318,7 +321,7 @@ class VolumeCreateRequest(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str = "ok"
-    version: str = "0.4.4"
+    version: str = __version__
 
 
 # ── Backup Schedule Models ────────────────────────────────────────────────────
