@@ -337,7 +337,7 @@ async def create_volume(request: VolumeCreateRequest, session: dict = Depends(re
 
         def _create():
             try:
-                success = volume_service.create_volume(request.pool, request.volume_name)
+                success = volume_service.create_volume(request.pool, request.volume_name, task_id=task_id)
                 if not success:
                     task_queue.complete_task(task_id, success=False, error="Failed to create volume — it may already exist, or a remote pool requires v-helper api_host to be configured")
                 else:
@@ -372,7 +372,7 @@ async def rename_volume(request: RenameRequest, session: dict = Depends(require_
 
         def _rename():
             try:
-                success = volume_service.rename_volume(request.pool, request.old_name, request.new_name)
+                success = volume_service.rename_volume(request.pool, request.old_name, request.new_name, task_id=task_id)
                 if not success:
                     task_queue.complete_task(task_id, success=False, error="Failed to rename volume")
                 else:

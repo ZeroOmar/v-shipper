@@ -1,7 +1,6 @@
 """Volume management service."""
 
 import os
-import shutil
 import subprocess
 import tempfile
 import time
@@ -13,6 +12,30 @@ from app.models import VolumeInfo, PoolStats
 from app.services.task_queue import get_task_queue
 from app.services.remote_api_client import RemoteApiClient, RemoteApiError, client_for_pool
 from app.validation import validate_name, safe_join
+
+
+def task_log(task_id: Optional[str], level: str, msg: str) -> None:
+    """Print a log line, prefixing every line with ``[TASK:id]`` in task context.
+
+    Multiline messages (rsync / remote-API stderr) get the prefix on *every*
+    line so the stdout interceptor in ``task_queue`` routes them all into the
+    per-task buffer the web UI reads — otherwise continuation lines are dropped.
+    """
+    prefix = f"[TASK:{task_id}] " if task_id else ""
+    for line in (str(msg).splitlines() or [""]):
+        print(f"{prefix}[{level}] {line}", flush=True)
+
+
+def rm_rf(path) -> None:
+    """Forcefully remove a file or directory tree.
+
+    Shared delete primitive — kept identical to v-helper's ``/fs/rm`` so local
+    and remote deletes behave the same. Uses ``rm -rf`` (running as the
+    container's user) instead of ``shutil.rmtree``/``unlink`` so it tolerates
+    nested trees and mixed ownership/permissions. ``--`` guards against names
+    that begin with ``-`` (names are already validated, but defence in depth).
+    """
+    subprocess.run(["rm", "-rf", "--", str(path)], check=True)
 
 
 class VolumeService:
@@ -479,86 +502,94 @@ class VolumeService:
         
         return sorted(volumes, key=lambda v: v.name), warnings
     
-    def rename_volume(self, pool_name: str, old_name: str, new_name: str) -> bool:
+    def rename_volume(self, pool_name: str, old_name: str, new_name: str, task_id: str = None) -> bool:
         """Rename a volume."""
+        def _log(level: str, msg: str):
+            task_log(task_id, level, msg)
+
         pool = self.get_pool_by_name(pool_name)
         if not pool:
+            _log("ERROR", f"Pool {pool_name} not found")
             return False
 
         if self._is_remote_pool(pool):
             api = client_for_pool(pool)
             if not api:
-                print(f"[ERROR] Cannot rename volume in remote pool '{pool_name}' — no v-helper api_host configured", flush=True)
+                _log("ERROR", f"Cannot rename volume in remote pool '{pool_name}' — no v-helper api_host configured")
                 return False
             try:
                 api.rename(old_name, new_name)
-                print(f"[INFO] Renamed remote volume {old_name} → {new_name} in {pool_name}", flush=True)
+                _log("INFO", f"Renamed remote volume {old_name} → {new_name} in {pool_name}")
                 with self.size_lock:
                     pool_sizes = self.size_cache.get(pool_name, {})
                     if old_name in pool_sizes:
                         pool_sizes[new_name] = pool_sizes.pop(old_name)
                 return True
             except RemoteApiError as exc:
-                print(f"[ERROR] Remote rename failed: {exc}", flush=True)
+                _log("ERROR", f"Remote rename failed: {exc}")
                 return False
 
         try:
             old_path = safe_join(pool["path"], old_name)
             new_path = safe_join(pool["path"], new_name)
         except ValueError as e:
-            print(f"[ERROR] Path traversal attempt in rename: {e}", flush=True)
+            _log("ERROR", f"Path traversal attempt in rename: {e}")
             return False
 
         try:
             if not old_path.exists():
-                print(f"[ERROR] Volume {old_name} not found", flush=True)
+                _log("ERROR", f"Volume {old_name} not found")
                 return False
 
             if new_path.exists():
-                print(f"[ERROR] Volume {new_name} already exists", flush=True)
+                _log("ERROR", f"Volume {new_name} already exists")
                 return False
 
             old_path.rename(new_path)
-            print(f"[INFO] Renamed volume {old_name} to {new_name}", flush=True)
+            _log("INFO", f"Renamed volume {old_name} to {new_name}")
             return True
         except Exception as e:
-            print(f"[ERROR] Failed to rename volume: {e}", flush=True)
+            _log("ERROR", f"Failed to rename volume: {e}")
             return False
     
-    def create_volume(self, pool_name: str, volume_name: str) -> bool:
+    def create_volume(self, pool_name: str, volume_name: str, task_id: str = None) -> bool:
         """Create a new volume directory."""
+        def _log(level: str, msg: str):
+            task_log(task_id, level, msg)
+
         pool = self.get_pool_by_name(pool_name)
         if not pool:
+            _log("ERROR", f"Pool {pool_name} not found")
             return False
 
         if self._is_remote_pool(pool):
             api = client_for_pool(pool)
             if not api:
-                print(f"[ERROR] Cannot create volume in remote pool '{pool_name}' — no v-helper api_host configured", flush=True)
+                _log("ERROR", f"Cannot create volume in remote pool '{pool_name}' — no v-helper api_host configured")
                 return False
             try:
                 api.mkdir(volume_name)
-                print(f"[INFO] Created remote volume '{volume_name}' in '{pool_name}'", flush=True)
+                _log("INFO", f"Created remote volume '{volume_name}' in '{pool_name}'")
                 return True
             except RemoteApiError as exc:
-                print(f"[ERROR] Remote mkdir failed: {exc}", flush=True)
+                _log("ERROR", f"Remote mkdir failed: {exc}")
                 return False
 
         try:
             new_path = safe_join(pool["path"], volume_name)
         except ValueError as e:
-            print(f"[ERROR] Path traversal attempt in create_volume: {e}", flush=True)
+            _log("ERROR", f"Path traversal attempt in create_volume: {e}")
             return False
 
         try:
             if new_path.exists():
-                print(f"[ERROR] Volume '{volume_name}' already exists in '{pool_name}'", flush=True)
+                _log("ERROR", f"Volume '{volume_name}' already exists in '{pool_name}'")
                 return False
             new_path.mkdir(mode=0o777, parents=False, exist_ok=False)
-            print(f"[INFO] Created volume '{volume_name}' in '{pool_name}'", flush=True)
+            _log("INFO", f"Created volume '{volume_name}' in '{pool_name}'")
             return True
         except Exception as e:
-            print(f"[ERROR] Failed to create volume '{volume_name}': {e}", flush=True)
+            _log("ERROR", f"Failed to create volume '{volume_name}': {e}")
             return False
 
     def delete_volume(self, pool_name: str, volume_name: str, task_id: str = None) -> bool:
@@ -568,8 +599,7 @@ class VolumeService:
             return False
 
         def _log(level: str, msg: str):
-            prefix = f"[TASK:{task_id}] " if task_id else ""
-            print(f"{prefix}[{level}] {msg}", flush=True)
+            task_log(task_id, level, msg)
 
         # Reject names that could inject rsync filter syntax or path traversal.
         try:
@@ -631,23 +661,22 @@ class VolumeService:
         try:
             volume_path = safe_join(pool["path"], volume_name)
         except ValueError as e:
-            print(f"[ERROR] Path traversal attempt in delete: {e}", flush=True)
+            _log("ERROR", f"Path traversal attempt in delete: {e}")
             return False
 
         try:
             if not volume_path.exists():
-                print(f"[ERROR] Volume {volume_name} not found", flush=True)
+                _log("ERROR", f"Volume {volume_name} not found")
                 return False
 
-            if volume_path.is_dir():
-                shutil.rmtree(volume_path)
-            else:
-                volume_path.unlink()
+            rm_rf(volume_path)
 
-            print(f"[INFO] Deleted volume {volume_name}", flush=True)
+            _log("INFO", f"Deleted volume {volume_name}")
+            with self.size_lock:
+                self.size_cache.get(pool_name, {}).pop(volume_name, None)
             return True
         except Exception as e:
-            print(f"[ERROR] Failed to delete volume: {e}", flush=True)
+            _log("ERROR", f"Failed to delete volume: {e}")
             return False
     
     def create_pool(self, path: str) -> bool:

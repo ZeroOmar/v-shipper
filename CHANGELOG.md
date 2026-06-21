@@ -2,6 +2,21 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.4.4
+
+### Fixed
+
+- **Rename and create logs now appear in the UI task log viewer** — `rename_volume` and `create_volume` run as queued tasks but never received a `task_id`, so all their log lines (remote API errors, "already exists", path-traversal rejections, success messages) were printed without the `[TASK:id]` prefix and were invisible in the log viewer; the parameter is now threaded through from both routes.
+- **Migration rsync failures now appear in the UI task log viewer** — `_rsync_volume` printed rsync failure output with a bare `[ERROR]` prefix; the multiline rsync stderr is now prefixed per-line with `[TASK:id]` so every line reaches the log buffer.
+- **Multiline remote-delete errors now fully visible** — `delete_volume` logged multiline rsync/remote-API errors in a single print, so only the first line carried the `[TASK:id]` prefix and continuation lines were dropped from the viewer; every line is now prefixed.
+- **Notification errors now attributed to their task** — post-completion notification failures were logged without the `[TASK:id]` prefix and never appeared against the task.
+- **Size cache cleared after local volume deletion** — deleting a volume on a local pool left a stale entry in the size cache (remote deletes already evicted it).
+
+### Changed
+
+- **Unified delete primitive** — local volume deletion now uses `rm -rf` (new shared `rm_rf` helper) instead of `shutil.rmtree`/`unlink`, matching v-helper's `/fs/rm` so local and remote deletes behave identically and tolerate nested trees and mixed ownership/permissions.
+- **Task logging centralized** — added a `task_log` helper that prefixes every line of a (possibly multiline) message with `[TASK:id]`; delete, rename, and create now share it.
+
 ## 0.4.3
 
 ### Fixed

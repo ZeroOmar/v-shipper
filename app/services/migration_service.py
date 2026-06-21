@@ -162,14 +162,15 @@ class MigrationService:
             if return_code != 0:
                 stderr = process.stderr.read()
                 error_msg = f"Rsync failed with code {return_code}: {stderr.strip()}"
-                print(f"[ERROR] {error_msg}", flush=True)
+                for line in (error_msg.splitlines() or [""]):
+                    print(f"[TASK:{task_id}] [ERROR] {line}", flush=True)
                 return False, error_msg
-            
+
             return True, ""
-        
+
         except Exception as e:
             error_msg = f"Rsync execution failed: {e}"
-            print(f"[ERROR] {error_msg}", flush=True)
+            print(f"[TASK:{task_id}] [ERROR] {error_msg}", flush=True)
             return False, error_msg
 
     def _cleanup_partial_destination(self, task_id: str, dest_pool_name: str, dest_volume_name: str):

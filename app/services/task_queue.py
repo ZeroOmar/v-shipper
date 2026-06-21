@@ -148,7 +148,7 @@ class TaskQueue:
             if svc:
                 svc.notify_task_completion(task)
         except Exception as e:
-            print(f"[WARNING] Notification error for task {task.get('task_id')}: {e}", flush=True)
+            print(f"[TASK:{task.get('task_id')}] [WARNING] Notification error: {e}", flush=True)
 
     def create_lockfile(self, pool: str, volume: str) -> str:
         """Create exclusive lock for volume operation."""
