@@ -2,6 +2,9 @@
 
 Docker volume migration and backup tool with a web UI. Stateless, containerized, Alpine-based.
 
+<p align="center"> <img src="images/SCR-20260621-taaa.png" alt="Project Screenshot" width="80%"> </p>
+
+
 ## Features
 
 - **Web UI** — responsive dashboard with login, pool browser, and task history
