@@ -2,6 +2,17 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.5.1
+
+### Changed
+
+- **Volume & backup action buttons are now icons** — the per-row action buttons (Migrate, Backup, Rename, Permissions, Delete, Restore) use emoji icons with the label shown on hover, instead of text. As more actions were added the text buttons crowded the row; the compact icons fit comfortably.
+
+### Fixed
+
+- **Docker socket connection failed with "Not supported URL scheme http+docker"** — the docker SDK (`docker==7.0.0`) is incompatible with `requests>=2.32`, so `docker.from_env()` raised on every call and the container-usage feature silently returned nothing. Bumped to `docker==7.1.0`, which restores the `http+docker://` transport adapter.
+- **Noisy `CryptographyDeprecationWarning` (TripleDES) on startup** — paramiko (pulled in transitively by the docker SDK) logs a deprecation warning on import. It is now filtered at package import in `app/__init__.py`.
+
 ## 0.5.0
 
 ### Added

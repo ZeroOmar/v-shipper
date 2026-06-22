@@ -384,11 +384,11 @@ function displayVolumes(poolName, volumes, warnings = []) {
                         </div>
                     </div>
                     <div class="volume-actions">
-                        <button class="btn vol-btn" data-action="open-migrate" ${volAttrs}>Migrate</button>
-                        <button class="btn vol-btn" data-action="open-backup" ${volAttrs}>Backup</button>
-                        ${isLocalDocker ? `<button class="btn tonal vol-btn" data-action="open-rename" ${volAttrs}>Rename</button>` : ''}
-                        ${isLocalDocker ? `<button class="btn tonal vol-btn" data-action="open-permissions" ${volAttrs}>Permissions</button>` : ''}
-                        <button class="btn danger vol-btn" data-action="open-delete" ${volAttrs}>Delete</button>
+                        <button class="btn vol-btn" title="Migrate" aria-label="Migrate" data-action="open-migrate" ${volAttrs}>🚚</button>
+                        <button class="btn vol-btn" title="Backup" aria-label="Backup" data-action="open-backup" ${volAttrs}>💾</button>
+                        ${isLocalDocker ? `<button class="btn tonal vol-btn" title="Rename" aria-label="Rename" data-action="open-rename" ${volAttrs}>✏️</button>` : ''}
+                        ${isLocalDocker ? `<button class="btn tonal vol-btn" title="Permissions" aria-label="Permissions" data-action="open-permissions" ${volAttrs}>🔑</button>` : ''}
+                        <button class="btn danger vol-btn" title="Delete" aria-label="Delete" data-action="open-delete" ${volAttrs}>🗑️</button>
                     </div>
                 </div>
             `;
@@ -522,8 +522,8 @@ function renderBackupItem(poolName, archive, dateLabel) {
             <div class="backup-item-meta">${meta}</div>
         </div>
         <div class="backup-item-actions">
-            <button class="btn vol-btn" data-action="open-restore" data-pool="${escapeHtml(poolName)}" data-file="${escapeHtml(archive.name)}">Restore</button>
-            <button class="btn danger vol-btn" data-action="open-delete" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(archive.name)}">Delete</button>
+            <button class="btn vol-btn" title="Restore" aria-label="Restore" data-action="open-restore" data-pool="${escapeHtml(poolName)}" data-file="${escapeHtml(archive.name)}">📥</button>
+            <button class="btn danger vol-btn" title="Delete" aria-label="Delete" data-action="open-delete" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(archive.name)}">🗑️</button>
         </div>
     </div>`;
 }

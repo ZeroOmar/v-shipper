@@ -280,9 +280,10 @@ button:disabled, .btn:disabled {
 
 /* Small volume action buttons */
 .vol-btn {
-  font-size: 11px;
-  padding: 6px 12px;
-  min-width: 58px;
+  font-size: 16px;
+  line-height: 1;
+  padding: 6px 9px;
+  min-width: 0;
   box-shadow: none;
 }
 
