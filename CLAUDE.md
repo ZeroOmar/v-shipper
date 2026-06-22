@@ -27,7 +27,8 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 | `app/models.py` | Pydantic request/response models |
 | `app/api/routes.py` | All REST endpoints |
 | `app/services/volume_service.py` | Volume discovery, disk stats, rename/delete, permissions (chmod/chown) |
-| `app/services/docker_service.py` | Docker socket client — maps volumes to the containers using them |
+| `app/services/docker_service.py` | Docker socket client — maps volumes to the containers using them; stops/starts containers (local) |
+| `app/services/container_control.py` | Stop/start the containers using a volume around an operation — dispatches local (docker_service) vs remote (v-helper API) |
 | `app/services/remote_api_client.py` | HTTP client for the v-helper control API |
 | `app/services/migration_service.py` | rsync orchestration, lockfiles |
 | `app/services/backup_service.py` | tar archiving, remote restore via staging |
@@ -77,6 +78,7 @@ docker_hosts:
     api_key: secret           # required if api_host set
     docker_socket: true       # optional: report containers using each volume
     docker_host_path: /var/docker-volumes  # optional: host path volumes really live at (defaults to pool)
+    container_stop_timeout: 120   # optional: grace period (s) before SIGKILL when stopping a container (default 120)
 
 backup_pools:
   - name: backup

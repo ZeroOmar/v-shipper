@@ -24,7 +24,8 @@ class RemoteApiClient:
         self._key = api_key
         self._timeout = timeout
 
-    def _request(self, method: str, path: str, body: Optional[Dict] = None) -> Any:
+    def _request(self, method: str, path: str, body: Optional[Dict] = None,
+                 timeout: Optional[int] = None) -> Any:
         url = self._base + path
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(
@@ -38,7 +39,7 @@ class RemoteApiClient:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout or self._timeout) as resp:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as exc:
             try:
@@ -120,6 +121,15 @@ class RemoteApiClient:
             return self._request("GET", "/docker/users")
         except RemoteApiError:
             return {}
+
+    def stop_container(self, name: str, timeout: int = 120) -> None:
+        """Stop a container by name. The HTTP wait outlives the docker grace period
+        (timeout + headroom) so a slow-but-successful stop isn't read as a failure."""
+        self._request("POST", "/docker/container/stop", {"name": name}, timeout=timeout + 30)
+
+    def start_container(self, name: str) -> None:
+        """Start a container by name."""
+        self._request("POST", "/docker/container/start", {"name": name})
 
 
 def client_for_pool(pool: Dict[str, Any]) -> Optional[RemoteApiClient]:

@@ -135,6 +135,18 @@ class DockerService:
 
         return result
 
+    def stop_container(self, name: str, timeout: int = 120) -> None:
+        """Stop a container by name, waiting up to *timeout* seconds for a clean exit."""
+        if not self.client:
+            raise RuntimeError("Docker daemon unavailable")
+        self.client.containers.get(name).stop(timeout=timeout)
+
+    def start_container(self, name: str) -> None:
+        """Start a container by name."""
+        if not self.client:
+            raise RuntimeError("Docker daemon unavailable")
+        self.client.containers.get(name).start()
+
     def is_healthy(self) -> bool:
         """Check if Docker daemon is accessible."""
         if not self.client:

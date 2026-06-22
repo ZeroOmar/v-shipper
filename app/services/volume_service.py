@@ -13,6 +13,7 @@ from typing import Any, List, Dict, Optional
 from app.models import VolumeInfo, PoolStats
 from app.services.task_queue import get_task_queue
 from app.services.remote_api_client import RemoteApiClient, RemoteApiError, client_for_pool
+from app.services import container_control
 from app.validation import validate_name, safe_join
 
 
@@ -65,6 +66,7 @@ class VolumeService:
                     "api_key": host.api_key,
                     "docker_socket": host.docker_socket,
                     "docker_host_path": host.docker_host_path,
+                    "container_stop_timeout": host.container_stop_timeout,
                     "role": "docker",
                 }
 
@@ -528,7 +530,8 @@ class VolumeService:
         
         return sorted(volumes, key=lambda v: v.name), warnings
     
-    def rename_volume(self, pool_name: str, old_name: str, new_name: str, task_id: str = None) -> bool:
+    def rename_volume(self, pool_name: str, old_name: str, new_name: str, task_id: str = None,
+                      stop_containers_before: bool = False) -> bool:
         """Rename a volume."""
         def _log(level: str, msg: str):
             task_log(task_id, level, msg)
@@ -537,6 +540,9 @@ class VolumeService:
         if not pool:
             _log("ERROR", f"Pool {pool_name} not found")
             return False
+
+        if stop_containers_before:
+            container_control.stop_running_containers(pool, old_name, task_id)
 
         if self._is_remote_pool(pool):
             api = client_for_pool(pool)
@@ -632,7 +638,9 @@ class VolumeService:
             return str(gid)
 
     def change_permissions(self, pool_name: str, volume_name: str, mode: Optional[str],
-                           owner_spec: Optional[str], task_id: str = None) -> bool:
+                           owner_spec: Optional[str], task_id: str = None,
+                           stop_containers_before: bool = False,
+                           start_containers_after: bool = False) -> bool:
         """Run ``chmod -R`` and/or ``chown -R`` on a volume folder.
 
         ``mode`` (octal) triggers chmod; ``owner_spec`` (a ``user:group`` string)
@@ -652,7 +660,11 @@ class VolumeService:
             return False
 
         lock_file = self.task_queue.create_lockfile(pool_name, volume_name)
+        stopped_containers = []
         try:
+            if stop_containers_before:
+                stopped_containers = container_control.stop_running_containers(pool, volume_name, task_id)
+
             if self._is_remote_pool(pool):
                 api = client_for_pool(pool)
                 if not api:
@@ -699,6 +711,8 @@ class VolumeService:
                 _log("INFO", f"{' '.join(argv[:-1])} completed")
             return True
         finally:
+            if start_containers_after and stopped_containers:
+                container_control.start_containers(pool, stopped_containers, task_id)
             self.task_queue.remove_lockfile(lock_file)
 
     @staticmethod
@@ -751,7 +765,8 @@ class VolumeService:
             _log("ERROR", f"Failed to create volume '{volume_name}': {e}")
             return False
 
-    def delete_volume(self, pool_name: str, volume_name: str, task_id: str = None) -> bool:
+    def delete_volume(self, pool_name: str, volume_name: str, task_id: str = None,
+                      stop_containers_before: bool = False) -> bool:
         """Delete a volume or backup file."""
         pool = self.get_pool_by_name(pool_name)
         if not pool:
@@ -766,6 +781,9 @@ class VolumeService:
         except ValueError as e:
             _log("ERROR", f"Invalid volume name in delete: {e}")
             return False
+
+        if stop_containers_before:
+            container_control.stop_running_containers(pool, volume_name, task_id)
 
         # Handle remote pools
         if self._is_remote_pool(pool):

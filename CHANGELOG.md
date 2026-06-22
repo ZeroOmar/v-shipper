@@ -2,6 +2,20 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.6.0
+
+Coordinated release with v-helper `0.6.0` (shared version line). Remote container control requires v-helper `0.6.0`+.
+
+### Added
+
+- **Stop / start containers around volume operations** — migrate, backup, and permission changes now offer optional "Stop container(s) before" and "Start container(s) after" checkboxes; rename and delete offer "Stop container(s) before". The checkboxes appear only when the volume is in use by a running container, and default to unchecked. Stopping lets an operation run against a quiesced volume (no torn reads / busy targets); the start step restarts only the containers that were actually stopped, and runs even if the operation fails so containers come back up. A failed stop aborts the operation rather than proceeding on a live volume. Works on both local pools (Docker socket) and remote pools (via the v-helper control API).
+- **Scheduled backups can stop / start containers** — backup schedules gained `stop_containers_before` / `start_containers_after` flags, applied to every volume in the schedule on each run.
+- **`container_stop_timeout` pool config option** (default `120`) — the grace period, in seconds, given to a container to shut down cleanly before it is killed. Generous by default so slow-to-stop containers aren't killed mid-flush; the remote HTTP timeout is sized above it so a slow-but-successful stop isn't misread as a failure.
+
+### Changed
+
+- **Container-usage tooltip repositioned** — the badge tooltip is now `position: fixed` and placed by JS relative to the badge, so it escapes the volume row's `overflow` and the scrollable volumes pane that previously clipped it. Toggled via a `show-tip` class instead of CSS `:hover`/`.open`.
+
 ## 0.5.2
 
 ### Fixed

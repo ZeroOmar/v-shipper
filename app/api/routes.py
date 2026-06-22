@@ -284,6 +284,8 @@ async def migrate_volume(request: MigrateRequest, session: dict = Depends(requir
             delete_source=request.delete_source,
             conflict_resolution=request.conflict_resolution,
             rename_dest=request.rename_dest,
+            stop_containers_before=request.stop_containers_before,
+            start_containers_after=request.start_containers_after,
         )
 
         def _migrate():
@@ -296,6 +298,8 @@ async def migrate_volume(request: MigrateRequest, session: dict = Depends(requir
                 delete_source=request.delete_source,
                 conflict_resolution=request.conflict_resolution,
                 rename_dest=request.rename_dest,
+                stop_containers_before=request.stop_containers_before,
+                start_containers_after=request.start_containers_after,
             )
 
         threading.Thread(target=_migrate, daemon=True).start()
@@ -329,14 +333,16 @@ async def backup_volume(request: BackupRequest, session: dict = Depends(require_
             backup_pool=request.backup_pool,
             verify=request.verify
         )
-        
+
         def _backup():
             backup_service.backup_volume(
                 task_id,
                 request.source_pool,
                 request.source_volume,
                 request.backup_pool,
-                verify=request.verify
+                verify=request.verify,
+                stop_containers_before=request.stop_containers_before,
+                start_containers_after=request.start_containers_after,
             )
         
         thread = threading.Thread(target=_backup, daemon=True)
@@ -403,7 +409,10 @@ async def rename_volume(request: RenameRequest, session: dict = Depends(require_
 
         def _rename():
             try:
-                success = volume_service.rename_volume(request.pool, request.old_name, request.new_name, task_id=task_id)
+                success = volume_service.rename_volume(
+                    request.pool, request.old_name, request.new_name, task_id=task_id,
+                    stop_containers_before=request.stop_containers_before,
+                )
                 if not success:
                     task_queue.complete_task(task_id, success=False, error="Failed to rename volume")
                 else:
@@ -450,7 +459,10 @@ async def delete_volume(request: DeleteRequest, session: dict = Depends(require_
         task_queue.start_task(task_id)
         def _delete():
             try:
-                success = volume_service.delete_volume(request.pool, request.volume_name, task_id=task_id)
+                success = volume_service.delete_volume(
+                    request.pool, request.volume_name, task_id=task_id,
+                    stop_containers_before=request.stop_containers_before,
+                )
                 if not success:
                     task_queue.complete_task(task_id, success=False, error="Failed to delete volume")
                 else:
@@ -507,7 +519,9 @@ async def change_permissions(request: PermissionsRequest, session: dict = Depend
         def _chperm():
             try:
                 success = volume_service.change_permissions(
-                    request.pool, request.volume_name, request.mode, owner_spec, task_id=task_id
+                    request.pool, request.volume_name, request.mode, owner_spec, task_id=task_id,
+                    stop_containers_before=request.stop_containers_before,
+                    start_containers_after=request.start_containers_after,
                 )
                 if not success:
                     task_queue.complete_task(task_id, success=False, error="Failed to change permissions")
@@ -732,6 +746,8 @@ def _job_to_model(job: dict) -> BackupSchedule:
         volumes=job.get('volumes', []),
         retention=job.get('retention', 7),
         enabled=job.get('enabled', True),
+        stop_containers_before=job.get('stop_containers_before', False),
+        start_containers_after=job.get('start_containers_after', False),
         next_run=job.get('next_run'),
     )
 
@@ -754,6 +770,8 @@ async def create_schedule(body: BackupScheduleCreate, session: dict = Depends(re
         'backup_pool': body.backup_pool,
         'volumes': [v.model_dump() for v in body.volumes],
         'retention': body.retention,
+        'stop_containers_before': body.stop_containers_before,
+        'start_containers_after': body.start_containers_after,
     })
     return _job_to_model(job)
 
@@ -769,6 +787,8 @@ async def update_schedule(job_id: str, body: BackupScheduleCreate, session: dict
         'backup_pool': body.backup_pool,
         'volumes': [v.model_dump() for v in body.volumes],
         'retention': body.retention,
+        'stop_containers_before': body.stop_containers_before,
+        'start_containers_after': body.start_containers_after,
     })
     if job is None:
         raise HTTPException(status_code=404, detail="Schedule not found")

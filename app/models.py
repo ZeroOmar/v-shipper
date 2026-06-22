@@ -34,6 +34,7 @@ class _PoolBase(BaseModel):
     api_key: Optional[str] = None
     docker_socket: bool = False
     docker_host_path: Optional[str] = None
+    container_stop_timeout: int = 120
 
     @field_validator("name")
     @classmethod
@@ -219,6 +220,8 @@ class MigrateRequest(BaseModel):
     delete_source: bool = False
     conflict_resolution: ConflictResolution = None
     rename_dest: Optional[str] = None
+    stop_containers_before: bool = False
+    start_containers_after: bool = False
 
     @field_validator("source_pool", "dest_pool")
     @classmethod
@@ -242,6 +245,8 @@ class BackupRequest(BaseModel):
     source_volume: str
     backup_pool: str
     verify: bool = True
+    stop_containers_before: bool = False
+    start_containers_after: bool = False
 
     @field_validator("source_pool", "source_volume", "backup_pool")
     @classmethod
@@ -254,6 +259,7 @@ class RenameRequest(BaseModel):
     pool: str
     old_name: str
     new_name: str
+    stop_containers_before: bool = False
 
     @field_validator("pool", "old_name", "new_name")
     @classmethod
@@ -266,6 +272,7 @@ class DeleteRequest(BaseModel):
     pool: str
     volume_name: str
     confirm: bool = False
+    stop_containers_before: bool = False
 
     @field_validator("pool", "volume_name")
     @classmethod
@@ -280,6 +287,8 @@ class PermissionsRequest(BaseModel):
     mode: Optional[str] = None     # run chmod if present
     owner: Optional[str] = None    # user token; run chown if owner + group present
     group: Optional[str] = None    # group token
+    stop_containers_before: bool = False
+    start_containers_after: bool = False
 
     @field_validator("pool", "volume_name")
     @classmethod
@@ -385,6 +394,8 @@ class BackupSchedule(BaseModel):
     volumes: List[ScheduleVolume]
     retention: int = 7
     enabled: bool = True
+    stop_containers_before: bool = False
+    start_containers_after: bool = False
     next_run: Optional[float] = None  # UTC unix timestamp
 
 
@@ -395,6 +406,8 @@ class BackupScheduleCreate(BaseModel):
     backup_pool: str
     volumes: List[ScheduleVolume]
     retention: int = Field(7, ge=1, le=365)
+    stop_containers_before: bool = False
+    start_containers_after: bool = False
 
     @field_validator("name", "backup_pool")
     @classmethod

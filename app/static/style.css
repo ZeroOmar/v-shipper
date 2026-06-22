@@ -644,11 +644,12 @@ input[type="checkbox"] {
 .status-dot.stopped { background: var(--md-outline); }
 .status-dot.mixed   { background: #C9990A; }
 .container-tooltip {
+  /* position: fixed so the tooltip escapes the volume row's overflow:hidden and the
+     scrollable volumes pane (which would otherwise clip it). Coordinates are set by
+     JS (positionContainerTip) relative to the badge. */
   display: none;
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  z-index: 50;
+  position: fixed;
+  z-index: 1000;
   min-width: 160px;
   max-width: 280px;
   padding: 8px 10px;
@@ -659,9 +660,7 @@ input[type="checkbox"] {
   font-weight: 400;
   white-space: normal;
 }
-.container-badge:hover .container-tooltip,
-.container-badge:focus .container-tooltip,
-.container-badge.open .container-tooltip { display: block; }
+.container-badge.show-tip > .container-tooltip { display: block; }
 .container-row {
   display: flex;
   align-items: center;

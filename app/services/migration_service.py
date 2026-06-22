@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Optional
 from app.services.task_queue import get_task_queue
+from app.services import container_control
 from app.validation import safe_join
 
 
@@ -18,7 +19,8 @@ class MigrationService:
     
     def migrate_volume(self, task_id: str, source_pool_name: str, source_volume_name: str,
                       dest_pool_name: str, verify: bool = True, delete_source: bool = False,
-                      conflict_resolution: Optional[str] = None, rename_dest: Optional[str] = None) -> bool:
+                      conflict_resolution: Optional[str] = None, rename_dest: Optional[str] = None,
+                      stop_containers_before: bool = False, start_containers_after: bool = False) -> bool:
         """Migrate volume from source to destination pool."""
 
         source_pool = self.volume_service.get_pool_by_name(source_pool_name)
@@ -33,9 +35,15 @@ class MigrationService:
         effective_dest = rename_dest if conflict_resolution == 'rename' and rename_dest else source_volume_name
 
         lock_file = self.task_queue.create_lockfile(source_pool_name, source_volume_name)
+        stopped_containers = []
 
         try:
             self.task_queue.start_task(task_id)
+
+            if stop_containers_before:
+                stopped_containers = container_control.stop_running_containers(
+                    source_pool, source_volume_name, task_id
+                )
 
             if source_pool.get("pool_type") == "remote":
                 source_path = self.volume_service._build_rsync_target(
@@ -110,6 +118,8 @@ class MigrationService:
             return False
         
         finally:
+            if start_containers_after and stopped_containers:
+                container_control.start_containers(source_pool, stopped_containers, task_id)
             self.task_queue.remove_lockfile(lock_file)
     
     def _rsync_volume(self, task_id: str, source_path: str, dest_path: str,

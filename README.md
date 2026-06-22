@@ -36,6 +36,9 @@ docker_hosts:
     # path v-shipper sees (e.g. a remapped bind mount). Used to match container
     # mounts to volumes. Defaults to `pool` (identity).
     docker_host_path: /var/docker-volumes
+    # Optional: grace period (seconds) given to a container to shut down cleanly
+    # when an operation stops it, before Docker sends SIGKILL. Defaults to 120.
+    container_stop_timeout: 120
 
   - name: remote-nas
     pool: /            # placeholder; ignored for remote pools
@@ -263,9 +266,9 @@ curl -X POST -b cookies.txt http://localhost/api/debug/cleanup
 
 The GitHub Actions workflow builds and pushes on semver tag:
 ```bash
-git tag 0.5.2
-git push origin 0.5.2
-# → ghcr.io/zeroomar/v-shipper:0.5.2
+git tag 0.6.0
+git push origin 0.6.0
+# → ghcr.io/zeroomar/v-shipper:0.6.0
 ```
 
 ## Limitations

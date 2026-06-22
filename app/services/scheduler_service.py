@@ -110,6 +110,8 @@ class SchedulerService:
             'volumes': data['volumes'],
             'retention': data.get('retention', 7),
             'enabled': True,
+            'stop_containers_before': data.get('stop_containers_before', False),
+            'start_containers_after': data.get('start_containers_after', False),
         }
         self.jobs[job_id] = job
         self._save()
@@ -127,6 +129,8 @@ class SchedulerService:
             'backup_pool': data['backup_pool'],
             'volumes': data['volumes'],
             'retention': data.get('retention', 7),
+            'stop_containers_before': data.get('stop_containers_before', False),
+            'start_containers_after': data.get('start_containers_after', False),
         })
         self._save()
         self._unschedule_job(job_id)
@@ -206,7 +210,11 @@ class SchedulerService:
                     parent_task_id=summary_task_id,
                 )
                 try:
-                    ok = self._backup_service.backup_volume(sub_task_id, pool_name, vol_name, job['backup_pool'])
+                    ok = self._backup_service.backup_volume(
+                        sub_task_id, pool_name, vol_name, job['backup_pool'],
+                        stop_containers_before=job.get('stop_containers_before', False),
+                        start_containers_after=job.get('start_containers_after', False),
+                    )
                 except Exception as e:
                     print(f"[TASK:{summary_task_id}] ✗ Failed {pool_name}/{vol_name}: {e}", flush=True)
                     ok = False

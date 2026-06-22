@@ -44,6 +44,7 @@ class ConfigManager:
                     api_key=host_config.get("api_key"),
                     docker_socket=host_config.get("docker_socket", False),
                     docker_host_path=host_config.get("docker_host_path"),
+                    container_stop_timeout=host_config.get("container_stop_timeout", 120),
                 )
                 docker_hosts.append(host)
 

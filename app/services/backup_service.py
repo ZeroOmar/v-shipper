@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Optional
 from app.services.task_queue import get_task_queue
+from app.services import container_control
 from app.validation import safe_join
 
 
@@ -38,7 +39,8 @@ class BackupService:
         self.task_queue = get_task_queue()
     
     def backup_volume(self, task_id: str, source_pool_name: str, source_volume_name: str,
-                     backup_pool_name: str, verify: bool = True) -> bool:
+                     backup_pool_name: str, verify: bool = True,
+                     stop_containers_before: bool = False, start_containers_after: bool = False) -> bool:
         """Backup a volume to a backup pool."""
         
         # Get pool configurations
@@ -54,9 +56,15 @@ class BackupService:
         remote_source_staging = None
         remote_staging_archive = None
         lock_file = self.task_queue.create_lockfile(source_pool_name, source_volume_name)
+        stopped_containers = []
 
         try:
             self.task_queue.start_task(task_id)
+
+            if stop_containers_before:
+                stopped_containers = container_control.stop_running_containers(
+                    source_pool, source_volume_name, task_id
+                )
 
             # For remote source pools, pull volume to a local staging dir before archiving
             if source_pool.get("pool_type") == "remote":
@@ -173,6 +181,8 @@ class BackupService:
             return False
         
         finally:
+            if start_containers_after and stopped_containers:
+                container_control.start_containers(source_pool, stopped_containers, task_id)
             self.task_queue.remove_lockfile(lock_file)
             if remote_source_staging and remote_source_staging.exists():
                 shutil.rmtree(remote_source_staging, ignore_errors=True)

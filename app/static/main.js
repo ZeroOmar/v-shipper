@@ -425,10 +425,32 @@ function renderContainerBadge(containers) {
         const dot = c.status === 'running' ? 'running' : 'stopped';
         return `<div class="container-row"><span class="status-dot ${dot}"></span>${escapeHtml(c.name)}<span class="container-status">${escapeHtml(c.status)}</span></div>`;
     }).join('');
-    return ` · <span class="container-badge" data-action="toggle-container-tooltip" tabindex="0" title="Containers using this volume">
+    return ` · <span class="container-badge" data-action="toggle-container-tooltip" tabindex="0" aria-label="Containers using this volume">
         <span class="status-dot ${cls}"></span>${total}
         <span class="container-tooltip">${rows}</span>
     </span>`;
+}
+
+// The tooltip is position:fixed (so it escapes the volume row's overflow:hidden and the
+// scrollable volumes pane). Compute its viewport coordinates from the badge each time
+// it's shown: above the badge by default, flipped below if there's no room, clamped
+// horizontally to the viewport.
+function positionContainerTip(badge) {
+    const tip = badge.querySelector('.container-tooltip');
+    if (!tip) return;
+    badge.classList.add('show-tip'); // display it first so it can be measured
+    const br = badge.getBoundingClientRect();
+    const tr = tip.getBoundingClientRect();
+    let left = Math.min(br.left, window.innerWidth - tr.width - 8);
+    left = Math.max(8, left);
+    let top = br.top - tr.height - 6;
+    if (top < 8) top = br.bottom + 6; // flip below when there's no room above
+    tip.style.left = `${left}px`;
+    tip.style.top = `${top}px`;
+}
+
+function hideContainerTip(badge) {
+    badge.classList.remove('show-tip');
 }
 
 // ── Backup Pool Grouped View ──────────────────────────────────────────────────
@@ -584,6 +606,39 @@ function runningContainerWarningHtml(poolName, volumeName, verb) {
     return `<div class="warning-banner">⚠ In use by running container${running.length !== 1 ? 's' : ''}: ${names}. ${verb} may cause corruption or downtime.</div>`;
 }
 
+// Stop/start-container checkboxes for an operation modal. Rendered only when the
+// volume is used by a running container (read from the cached usage map), so the
+// option appears only when it's actionable. `start` controls whether the
+// start-after checkbox is included (rename/delete pass false). The submit handlers
+// read the resulting checkboxes via readContainerControl().
+function containerControlCheckboxesHtml(poolName, volumeName, { start } = {}) {
+    const list = (containerUsageCache[poolName] || {})[volumeName] || [];
+    if (!list.some(c => c.status === 'running')) return '';
+    const startRow = start ? `
+        <div class="form-group">
+            <label class="checkbox-label">
+                <input type="checkbox" id="ccStartAfter">
+                <span>Start container(s) after</span>
+            </label>
+        </div>` : '';
+    return `
+        <div class="form-group">
+            <label class="checkbox-label">
+                <input type="checkbox" id="ccStopBefore">
+                <span>Stop container(s) before</span>
+            </label>
+        </div>${startRow}`;
+}
+
+// Read the container-control checkboxes (absent → false). Handlers spread or pick
+// from this when building the request body.
+function readContainerControl() {
+    return {
+        stop_containers_before: !!document.getElementById('ccStopBefore')?.checked,
+        start_containers_after: !!document.getElementById('ccStartAfter')?.checked,
+    };
+}
+
 function openRenameVolumeModal(poolName, volumeName) {
     const modal = document.getElementById('migrateModal');
     modal.querySelector('.modal-content').innerHTML = `
@@ -605,6 +660,7 @@ function openRenameVolumeModal(poolName, volumeName) {
                 <label>New Name</label>
                 <input type="text" id="renameVolumeName" value="${escapeHtml(volumeName)}" maxlength="255" pattern="${VOLUME_NAME_PATTERN}" title="${VOLUME_NAME_TITLE}" autofocus>
             </div>
+            ${containerControlCheckboxesHtml(poolName, volumeName, { start: false })}
             <button class="btn success" style="width:100%;" data-action="rename-volume" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(volumeName)}">Rename</button>
         </div>`;
     openModal('migrateModal');
@@ -620,7 +676,7 @@ async function renameVolume(poolName, oldName) {
         const res = await fetch(`${API_BASE}/rename`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pool: poolName, old_name: oldName, new_name: newName }),
+            body: JSON.stringify({ pool: poolName, old_name: oldName, new_name: newName, stop_containers_before: readContainerControl().stop_containers_before }),
         });
         const data = await res.json();
         if (res.ok) {
@@ -678,6 +734,7 @@ async function openPermissionsModal(poolName, volumeName) {
                 <input type="text" id="permMode" value="${escapeHtml(_permissionDefaults.mode)}" maxlength="4" pattern="[0-7]{3,4}" title="Octal mode, e.g. 755">
             </div>
             <p class="hint" style="opacity:.7;font-size:12px;">Applied recursively (-R). Only changed fields are applied.</p>
+            ${containerControlCheckboxesHtml(poolName, volumeName, { start: true })}
             <button class="btn success" style="width:100%;" data-action="save-permissions" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(volumeName)}">Apply</button>
         </div>`;
     openModal('migrateModal');
@@ -698,6 +755,7 @@ async function savePermissions(poolName, volumeName) {
     }
 
     if (!body.mode && !body.owner) { closeModal('migrateModal'); return; }
+    Object.assign(body, readContainerControl());
 
     try {
         const res = await fetch(`${API_BASE}/permissions`, {
@@ -792,6 +850,7 @@ function openMigrateModal(sourcePool, sourceVolume) {
                 <span>Delete source after verification</span>
             </label>
         </div>
+        ${containerControlCheckboxesHtml(sourcePool, sourceVolume, { start: true })}
         <button class="btn success" style="width: 100%;" data-action="start-migration" data-pool="${escapeHtml(sourcePool)}" data-vol="${escapeHtml(sourceVolume)}">Start Migration</button>
     `;
     
@@ -816,6 +875,7 @@ async function startMigration(sourcePool, sourceVolume) {
         dest_pool: destPool,
         verify,
         delete_source: deleteSource,
+        ...readContainerControl(),
     });
 }
 
@@ -882,6 +942,7 @@ function openBackupModal(sourcePool, sourceVolume) {
                 <span>Verify backup</span>
             </label>
         </div>
+        ${containerControlCheckboxesHtml(sourcePool, sourceVolume, { start: true })}
         <button class="btn success" style="width: 100%;" data-action="start-backup" data-pool="${escapeHtml(sourcePool)}" data-vol="${escapeHtml(sourceVolume)}">Start Backup</button>
     `;
     
@@ -907,7 +968,8 @@ async function startBackup(sourcePool, sourceVolume) {
                 source_pool: sourcePool,
                 source_volume: sourceVolume,
                 backup_pool: backupPool,
-                verify: verify
+                verify: verify,
+                ...readContainerControl(),
             })
         });
         
@@ -1040,6 +1102,7 @@ function openDeleteModal(pool, volume) {
             <input type="checkbox" id="deleteConfirm">
             <span>Yes, I want to delete this volume</span>
         </label>
+        ${containerControlCheckboxesHtml(pool, volume, { start: false })}
         <button class="btn danger" id="confirmDeleteButton" style="width: 100%; margin-top: 15px;" data-action="confirm-delete" data-pool="${escapeHtml(pool)}" data-vol="${escapeHtml(volume)}">Delete</button>
     `;
     
@@ -1067,7 +1130,8 @@ async function confirmDelete(pool, volume) {
             body: JSON.stringify({
                 pool: pool,
                 volume_name: volume,
-                confirm: confirmed
+                confirm: confirmed,
+                stop_containers_before: readContainerControl().stop_containers_before,
             })
         });
         
@@ -1698,6 +1762,14 @@ async function openScheduleForm(jobId = null) {
             <label>Retention (backups to keep per volume)
                 <input type="number" id="sfRetention" value="${job?.retention ?? 7}" min="1" max="365">
             </label>
+            <label class="checkbox-label">
+                <input type="checkbox" id="sfStopBefore" ${job?.stop_containers_before ? 'checked' : ''}>
+                <span>Stop container(s) before each volume's backup</span>
+            </label>
+            <label class="checkbox-label">
+                <input type="checkbox" id="sfStartAfter" ${job?.start_containers_after ? 'checked' : ''}>
+                <span>Start container(s) after each volume's backup</span>
+            </label>
             <label>Volumes to Back Up
                 <div class="schedule-volume-groups" id="sfVolumeGroups">
                     ${volumeGroupsHtml || '<div class="placeholder-text">No volumes available</div>'}
@@ -1726,7 +1798,11 @@ async function saveSchedule(jobId) {
     });
     if (!volumes.length) { showError('Select at least one volume'); return; }
 
-    const body = { name, cron, backup_pool: backupPool, volumes, retention };
+    const body = {
+        name, cron, backup_pool: backupPool, volumes, retention,
+        stop_containers_before: !!document.getElementById('sfStopBefore')?.checked,
+        start_containers_after: !!document.getElementById('sfStartAfter')?.checked,
+    };
     const url = jobId ? `${API_BASE}/schedules/${jobId}` : `${API_BASE}/schedules`;
     const method = jobId ? 'PUT' : 'POST';
 
@@ -2403,18 +2479,44 @@ const ACTION_HANDLERS = {
     'open-task-detail':    (d) => openTaskDetailModalById(d.id),
     'nav-task-detail':     (d) => navigateToTaskDetail(d.id),
     'task-detail-back':    ()  => taskDetailBack(),
-    'toggle-container-tooltip': (d, el) => el && el.classList.toggle('open'),
+    'toggle-container-tooltip': (d, el) => {
+        if (!el) return;
+        const willPin = !el.classList.contains('pinned');
+        document.querySelectorAll('.container-badge.pinned').forEach(b => {
+            if (b !== el) { b.classList.remove('pinned'); hideContainerTip(b); }
+        });
+        el.classList.toggle('pinned', willPin);
+        if (willPin) positionContainerTip(el); else hideContainerTip(el);
+    },
 };
 
 document.addEventListener('click', (e) => {
     const el = e.target.closest('[data-action]');
-    // Close any open container tooltip when clicking outside its badge.
-    document.querySelectorAll('.container-badge.open').forEach(b => {
-        if (!b.contains(e.target)) b.classList.remove('open');
+    // Close any pinned container tooltip when clicking outside its badge.
+    document.querySelectorAll('.container-badge.pinned').forEach(b => {
+        if (!b.contains(e.target)) { b.classList.remove('pinned'); hideContainerTip(b); }
     });
     if (!el) return;
     const handler = ACTION_HANDLERS[el.dataset.action];
     if (handler) handler(el.dataset, el);
+});
+
+// Container badge tooltip: show on hover/focus, pin open on click/tap (for touch).
+document.addEventListener('mouseover', (e) => {
+    const b = e.target.closest && e.target.closest('.container-badge');
+    if (b) positionContainerTip(b);
+});
+document.addEventListener('mouseout', (e) => {
+    const b = e.target.closest && e.target.closest('.container-badge');
+    if (b && !b.classList.contains('pinned') && !b.contains(e.relatedTarget)) hideContainerTip(b);
+});
+document.addEventListener('focusin', (e) => {
+    const b = e.target.closest && e.target.closest('.container-badge');
+    if (b) positionContainerTip(b);
+});
+document.addEventListener('focusout', (e) => {
+    const b = e.target.closest && e.target.closest('.container-badge');
+    if (b && !b.classList.contains('pinned') && !b.contains(e.relatedTarget)) hideContainerTip(b);
 });
 
 document.addEventListener('click', (e) => {
