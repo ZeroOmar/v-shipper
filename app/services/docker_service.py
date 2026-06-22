@@ -4,13 +4,26 @@ import docker
 from typing import List, Optional, Dict
 
 
-def host_path_for_volume(pool: dict, volume_name: str) -> str:
-    """Host-namespace path for a volume folder.
+def candidate_bases(pool: dict) -> List[str]:
+    """Base directories a volume folder may appear under in the Docker namespace.
 
-    Docker reports mount sources in the host's namespace, which may differ from the
-    path v-shipper sees. ``docker_host_path`` is the host base directory for the pool;
-    when unset we assume the pool path is already the host path (identity).
+    Docker reports mount sources / volume devices in the host's namespace, which may
+    differ from the path v-shipper sees. We match against both ``docker_host_path``
+    (the real host base, e.g. a named volume's ``driver_opts: device`` base) and the
+    pool's own path (for containers that bind the path v-shipper sees directly). ``/``
+    and empty bases are skipped so we never match every path.
     """
+    bases: List[str] = []
+    for b in (pool.get("docker_host_path"), pool.get("path")):
+        if b and b != "/":
+            b = b.rstrip("/")
+            if b and b not in bases:
+                bases.append(b)
+    return bases
+
+
+def host_path_for_volume(pool: dict, volume_name: str) -> str:
+    """Primary host-namespace path for a volume folder (docker_host_path or pool path)."""
     base = (pool.get("docker_host_path") or pool.get("path") or "").rstrip("/")
     return f"{base}/{volume_name}"
 
@@ -61,34 +74,61 @@ class DockerService:
             print(f"[ERROR] Failed to list Docker containers: {e}", flush=True)
             return []
     
+    def _volume_real_paths(self) -> Dict[str, str]:
+        """Map each Docker named volume to its real host path.
+
+        For local-driver bind volumes (``driver_opts: {o: bind, device: /path}``) the
+        real path is ``Options.device``; otherwise it's the managed ``Mountpoint``. This
+        is what lets us match named volumes — a container's volume mount reports
+        ``Source`` as the managed mountpoint (``/var/lib/docker/volumes/<v>/_data``), not
+        the device path, so without this resolution bind-backed named volumes never match.
+        """
+        real: Dict[str, str] = {}
+        try:
+            for v in self.client.volumes.list():
+                attrs = v.attrs or {}
+                opts = attrs.get("Options") or {}
+                real[v.name] = opts.get("device") or attrs.get("Mountpoint")
+        except Exception as e:
+            print(f"[WARNING] Failed to list Docker volumes for mapping: {e}", flush=True)
+        return real
+
     def get_volume_container_map(self, pool: dict, volume_names: List[str]) -> Dict[str, List[dict]]:
         """Map each volume to the containers using it: {volume: [{name, status}]}.
 
-        A container uses a volume if any of its mount sources equals the volume's host
-        path or sits under it (covers sub-folder bind mounts and local-driver volumes
-        whose mountpoint lives there). One pass over the container list — the list API
-        already includes ``Mounts``, so no per-container inspect is needed. Returns an
-        empty map if the socket is unavailable, so callers never break.
+        A container uses a volume if any of its mount host-paths equals the volume's host
+        path or sits under it (covers sub-folder bind mounts and bind-backed named
+        volumes). Bind mounts use ``Source`` directly; named-volume mounts are resolved
+        to their real device/mountpoint via ``_volume_real_paths``. Returns an empty map
+        if the socket is unavailable, so callers never break.
         """
         result: Dict[str, List[dict]] = {name: [] for name in volume_names}
         if not self.client:
             return result
 
         try:
-            # Snapshot each container's mount sources once.
+            bases = candidate_bases(pool)
+            if not bases:
+                return result
+            vol_real = self._volume_real_paths()
+
+            # Snapshot each container's effective mount host-paths once.
             containers = []
             for container in self.client.containers.list(all=True):
-                sources = [
-                    m.get("Source") for m in (container.attrs.get("Mounts") or [])
-                    if m.get("Source")
-                ]
+                sources = []
+                for m in (container.attrs.get("Mounts") or []):
+                    if m.get("Type") == "volume":
+                        src = vol_real.get(m.get("Name")) or m.get("Source")
+                    else:
+                        src = m.get("Source")
+                    if src:
+                        sources.append(src)
                 containers.append({"name": container.name, "status": container.status, "sources": sources})
 
             for name in volume_names:
-                host_path = host_path_for_volume(pool, name)
-                prefix = host_path.rstrip("/") + "/"
+                cands = [f"{b}/{name}" for b in bases]
                 for c in containers:
-                    if any(s == host_path or s.startswith(prefix) for s in c["sources"]):
+                    if any(s == cand or s.startswith(cand + "/") for s in c["sources"] for cand in cands):
                         result[name].append({"name": c["name"], "status": c["status"]})
         except Exception as e:
             print(f"[ERROR] Failed to map containers to volumes: {e}", flush=True)

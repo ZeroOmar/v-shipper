@@ -263,9 +263,9 @@ curl -X POST -b cookies.txt http://localhost/api/debug/cleanup
 
 The GitHub Actions workflow builds and pushes on semver tag:
 ```bash
-git tag 0.5.1
-git push origin 0.5.1
-# → ghcr.io/zeroomar/v-shipper:0.5.1
+git tag 0.5.2
+git push origin 0.5.2
+# → ghcr.io/zeroomar/v-shipper:0.5.2
 ```
 
 ## Limitations

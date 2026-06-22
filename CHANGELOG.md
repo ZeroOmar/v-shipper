@@ -2,6 +2,13 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.5.2
+
+### Fixed
+
+- **Container detection missed bind-backed named volumes** — the container-usage scan only looked at each mount's `Source`, which for a Docker named volume is the managed mountpoint (`/var/lib/docker/volumes/<v>/_data`), not the `driver_opts: device` path. So a volume defined as `driver: local` + `o: bind` + `device: /host/path` was never matched and its containers went undetected — only raw bind mounts showed up. Named volumes are now resolved to their real host path (device option, falling back to mountpoint) before matching.
+- **Matching now considers both the host path and the pool path** — container mounts are matched against both `docker_host_path/<volume>` (the real host base, e.g. a named volume's device base) and the pool's own `path/<volume>`, so setups that reference volumes via different paths (e.g. a `/var/...` named-volume device and a `/mnt/...` bind mount of the same folder) are both detected. To match named-volume devices, set `docker_host_path` to the host base those devices live under.
+
 ## 0.5.1
 
 ### Changed
