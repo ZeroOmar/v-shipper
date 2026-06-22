@@ -13,6 +13,7 @@ let taskHistory = []; // Keep track of recent tasks
 let taskPage = 0; // Current task list page (100 per page)
 let consecutiveLoadFailures = 0; // Track network failures
 let appVersion = null; // v-shipper's own version, fetched once from /api/health
+let containerUsageCache = {}; // pool -> { volume: [{name, status}] }, from /api/containers
 
 // Configuration
 const POLL_INTERVAL = 2000; // 2 seconds
@@ -379,13 +380,14 @@ function displayVolumes(poolName, volumes, warnings = []) {
                         <div class="volume-name">${escapeHtml(volume.name)}</div>
                         <div class="volume-details">
                             <span class="volume-size">${sizeText}</span>
-                            <span class="volume-meta">Created: ${created}${backupLabel}</span>
+                            <span class="volume-meta">Created: ${created}${backupLabel}<span class="volume-containers" data-vol-users="${escapeHtml(volume.name)}"></span></span>
                         </div>
                     </div>
                     <div class="volume-actions">
                         <button class="btn vol-btn" data-action="open-migrate" ${volAttrs}>Migrate</button>
                         <button class="btn vol-btn" data-action="open-backup" ${volAttrs}>Backup</button>
                         ${isLocalDocker ? `<button class="btn tonal vol-btn" data-action="open-rename" ${volAttrs}>Rename</button>` : ''}
+                        ${isLocalDocker ? `<button class="btn tonal vol-btn" data-action="open-permissions" ${volAttrs}>Permissions</button>` : ''}
                         <button class="btn danger vol-btn" data-action="open-delete" ${volAttrs}>Delete</button>
                     </div>
                 </div>
@@ -394,6 +396,39 @@ function displayVolumes(poolName, volumes, warnings = []) {
     }
 
     container.innerHTML = html;
+
+    if (poolMeta.docker_socket && volumes.length) loadVolumeContainers(poolName);
+}
+
+// ── Container usage (Docker socket) ───────────────────────────────────────────
+
+async function loadVolumeContainers(poolName) {
+    try {
+        const res = await fetch(`${API_BASE}/containers?pool=${encodeURIComponent(poolName)}`);
+        if (!res.ok) return;
+        const map = await res.json();
+        containerUsageCache[poolName] = map;
+        if (activePool !== poolName) return; // user navigated away
+        Object.entries(map).forEach(([vol, containers]) => {
+            const el = document.querySelector(`.volume-containers[data-vol-users="${vol}"]`);
+            if (el) el.innerHTML = renderContainerBadge(containers);
+        });
+    } catch (e) { /* network/docker error — leave badges empty */ }
+}
+
+function renderContainerBadge(containers) {
+    if (!containers || !containers.length) return '';
+    const running = containers.filter(c => c.status === 'running').length;
+    const total = containers.length;
+    const cls = running === total ? 'running' : (running === 0 ? 'stopped' : 'mixed');
+    const rows = containers.map(c => {
+        const dot = c.status === 'running' ? 'running' : 'stopped';
+        return `<div class="container-row"><span class="status-dot ${dot}"></span>${escapeHtml(c.name)}<span class="container-status">${escapeHtml(c.status)}</span></div>`;
+    }).join('');
+    return ` · <span class="container-badge" data-action="toggle-container-tooltip" tabindex="0" title="Containers using this volume">
+        <span class="status-dot ${cls}"></span>${total}
+        <span class="container-tooltip">${rows}</span>
+    </span>`;
 }
 
 // ── Backup Pool Grouped View ──────────────────────────────────────────────────
@@ -431,40 +466,38 @@ function displayBackupPool(poolName, archives, warnings = []) {
         return;
     }
 
-    const groups = {};
+    // Two-level grouping: by app (volume) name, then by source pool within each app.
+    const apps = {};
     const unparsed = [];
     archives.forEach(a => {
         const parsed = parseBackupFilename(a.name);
         if (!parsed) { unparsed.push(a); return; }
-        const key = parsed.pool + '/' + (parsed.volume || '');
-        if (!groups[key]) groups[key] = { label: parsed.volume || parsed.pool, pool: parsed.pool, items: [] };
-        groups[key].items.push({ archive: a, parsed });
+        const appKey = parsed.volume || parsed.pool; // whole-pool backups fall back to the pool name
+        if (!apps[appKey]) apps[appKey] = { label: appKey, pools: {}, count: 0 };
+        if (!apps[appKey].pools[parsed.pool]) apps[appKey].pools[parsed.pool] = [];
+        apps[appKey].pools[parsed.pool].push({ archive: a, parsed });
+        apps[appKey].count++;
     });
 
-    // Sort groups alphabetically by label
-    const sortedGroups = Object.entries(groups).sort(([, a], [, b]) => a.label.localeCompare(b.label));
+    // Sort apps alphabetically by label
+    const sortedApps = Object.entries(apps).sort(([, a], [, b]) => a.label.localeCompare(b.label));
 
-    sortedGroups.forEach(([, g]) => {
-        g.items.sort((a, b) => b.parsed.timestamp - a.parsed.timestamp);
-        const count = g.items.length;
+    sortedApps.forEach(([, app]) => {
         html += `<div class="backup-group">
-            <div class="backup-group-header">${escapeHtml(g.label)} <span>from ${escapeHtml(g.pool)} · ${count} backup${count !== 1 ? 's' : ''}</span></div>
-            <div class="backup-group-items">`;
-        g.items.forEach(({ archive: a, parsed }) => {
-            const size = formatVolumeSize(a.size_bytes, a.size_gb);
-            const dt = `${String(parsed.timestamp.getDate()).padStart(2,'0')}/${String(parsed.timestamp.getMonth()+1).padStart(2,'0')}/${parsed.timestamp.getFullYear()} ${String(parsed.timestamp.getHours()).padStart(2,'0')}:${String(parsed.timestamp.getMinutes()).padStart(2,'0')}`;
-            html += `<div class="backup-item">
-                <div>
-                    <div class="backup-item-name">${escapeHtml(a.name)}</div>
-                    <div class="backup-item-meta">${dt} · ${size}</div>
-                </div>
-                <div style="display:flex;gap:6px;">
-                    <button class="btn vol-btn" data-action="open-restore" data-pool="${escapeHtml(poolName)}" data-file="${escapeHtml(a.name)}">Restore</button>
-                    <button class="btn danger vol-btn" data-action="open-delete" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(a.name)}">Delete</button>
-                </div>
-            </div>`;
+            <div class="backup-group-header">${escapeHtml(app.label)} <span>${app.count} backup${app.count !== 1 ? 's' : ''}</span></div>`;
+        // Sub-group by source pool, sorted alphabetically
+        Object.keys(app.pools).sort((a, b) => a.localeCompare(b)).forEach(poolKey => {
+            const items = app.pools[poolKey].sort((a, b) => b.parsed.timestamp - a.parsed.timestamp);
+            html += `<div class="backup-subgroup">
+                <div class="backup-subgroup-header">from ${escapeHtml(poolKey)} <span>· ${items.length} backup${items.length !== 1 ? 's' : ''}</span></div>
+                <div class="backup-group-items">`;
+            items.forEach(({ archive: a, parsed }) => {
+                const dt = `${String(parsed.timestamp.getDate()).padStart(2,'0')}/${String(parsed.timestamp.getMonth()+1).padStart(2,'0')}/${parsed.timestamp.getFullYear()} ${String(parsed.timestamp.getHours()).padStart(2,'0')}:${String(parsed.timestamp.getMinutes()).padStart(2,'0')}`;
+                html += renderBackupItem(poolName, a, dt);
+            });
+            html += `</div></div>`;
         });
-        html += `</div></div>`;
+        html += `</div>`;
     });
 
     if (unparsed.length > 0) {
@@ -472,22 +505,27 @@ function displayBackupPool(poolName, archives, warnings = []) {
             <div class="backup-group-header">Other <span>${unparsed.length} file${unparsed.length !== 1 ? 's' : ''}</span></div>
             <div class="backup-group-items">`;
         unparsed.forEach(a => {
-            const size = formatVolumeSize(a.size_bytes, a.size_gb);
-            html += `<div class="backup-item">
-                <div>
-                    <div class="backup-item-name">${escapeHtml(a.name)}</div>
-                    <div class="backup-item-meta">${size}</div>
-                </div>
-                <div style="display:flex;gap:6px;">
-                    <button class="btn vol-btn" data-action="open-restore" data-pool="${escapeHtml(poolName)}" data-file="${escapeHtml(a.name)}">Restore</button>
-                    <button class="btn danger vol-btn" data-action="open-delete" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(a.name)}">Delete</button>
-                </div>
-            </div>`;
+            html += renderBackupItem(poolName, a, '');
         });
         html += `</div></div>`;
     }
 
     container.innerHTML = html;
+}
+
+function renderBackupItem(poolName, archive, dateLabel) {
+    const size = formatVolumeSize(archive.size_bytes, archive.size_gb);
+    const meta = dateLabel ? `${dateLabel} · ${size}` : size;
+    return `<div class="backup-item">
+        <div class="backup-item-info">
+            <div class="backup-item-name">${escapeHtml(archive.name)}</div>
+            <div class="backup-item-meta">${meta}</div>
+        </div>
+        <div class="backup-item-actions">
+            <button class="btn vol-btn" data-action="open-restore" data-pool="${escapeHtml(poolName)}" data-file="${escapeHtml(archive.name)}">Restore</button>
+            <button class="btn danger vol-btn" data-action="open-delete" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(archive.name)}">Delete</button>
+        </div>
+    </div>`;
 }
 
 // ── Create / Rename Volume ─────────────────────────────────────────────────────
@@ -536,6 +574,16 @@ async function createVolume(poolName) {
     }
 }
 
+// Warning banner shown in migrate/rename/delete modals when the volume has running
+// containers. Reads the cached container-usage map; best-effort (empty → no banner).
+function runningContainerWarningHtml(poolName, volumeName, verb) {
+    const list = (containerUsageCache[poolName] || {})[volumeName] || [];
+    const running = list.filter(c => c.status === 'running');
+    if (!running.length) return '';
+    const names = running.map(c => escapeHtml(c.name)).join(', ');
+    return `<div class="warning-banner">⚠ In use by running container${running.length !== 1 ? 's' : ''}: ${names}. ${verb} may cause corruption or downtime.</div>`;
+}
+
 function openRenameVolumeModal(poolName, volumeName) {
     const modal = document.getElementById('migrateModal');
     modal.querySelector('.modal-content').innerHTML = `
@@ -544,6 +592,7 @@ function openRenameVolumeModal(poolName, volumeName) {
             <button class="close-btn" onclick="closeModal('migrateModal')">×</button>
         </div>
         <div class="modal-body">
+            ${runningContainerWarningHtml(poolName, volumeName, 'Renaming')}
             <div class="form-group">
                 <label>Pool</label>
                 <input type="text" value="${escapeHtml(poolName)}" disabled>
@@ -580,6 +629,89 @@ async function renameVolume(poolName, oldName) {
             showTaskProgress(data.task_id);
         } else {
             showError(data.detail || 'Failed to rename volume');
+        }
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+    }
+}
+
+let _permissionDefaults = null;
+
+async function openPermissionsModal(poolName, volumeName) {
+    let perms;
+    try {
+        const res = await fetch(`${API_BASE}/permissions?pool=${encodeURIComponent(poolName)}&volume=${encodeURIComponent(volumeName)}`);
+        const data = await res.json();
+        if (!res.ok) { showError(data.detail || 'Failed to read current permissions'); return; }
+        perms = data;
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+        return;
+    }
+    _permissionDefaults = { user: String(perms.user), group: String(perms.group), mode: String(perms.mode) };
+
+    const modal = document.getElementById('migrateModal');
+    modal.querySelector('.modal-content').innerHTML = `
+        <div class="modal-header">
+            <h3>Edit Permissions</h3>
+            <button class="close-btn" onclick="closeModal('migrateModal')">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>Pool</label>
+                <input type="text" value="${escapeHtml(poolName)}" disabled>
+            </div>
+            <div class="form-group">
+                <label>Volume</label>
+                <input type="text" value="${escapeHtml(volumeName)}" disabled>
+            </div>
+            <div class="form-group">
+                <label>User / UID</label>
+                <input type="text" id="permUser" value="${escapeHtml(_permissionDefaults.user)}" maxlength="32">
+            </div>
+            <div class="form-group">
+                <label>Group / GID</label>
+                <input type="text" id="permGroup" value="${escapeHtml(_permissionDefaults.group)}" maxlength="32">
+            </div>
+            <div class="form-group">
+                <label>Permission (octal)</label>
+                <input type="text" id="permMode" value="${escapeHtml(_permissionDefaults.mode)}" maxlength="4" pattern="[0-7]{3,4}" title="Octal mode, e.g. 755">
+            </div>
+            <p class="hint" style="opacity:.7;font-size:12px;">Applied recursively (-R). Only changed fields are applied.</p>
+            <button class="btn success" style="width:100%;" data-action="save-permissions" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(volumeName)}">Apply</button>
+        </div>`;
+    openModal('migrateModal');
+}
+
+async function savePermissions(poolName, volumeName) {
+    if (!_permissionDefaults) { closeModal('migrateModal'); return; }
+    const user = document.getElementById('permUser')?.value.trim();
+    const group = document.getElementById('permGroup')?.value.trim();
+    const mode = document.getElementById('permMode')?.value.trim();
+
+    const body = { pool: poolName, volume_name: volumeName };
+    if (mode && mode !== _permissionDefaults.mode) body.mode = mode;
+    if ((user && user !== _permissionDefaults.user) || (group && group !== _permissionDefaults.group)) {
+        if (!user || !group) { showError('User and Group are both required for an ownership change'); return; }
+        body.owner = user;
+        body.group = group;
+    }
+
+    if (!body.mode && !body.owner) { closeModal('migrateModal'); return; }
+
+    try {
+        const res = await fetch(`${API_BASE}/permissions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            closeModal('migrateModal');
+            loadVolumesForPool(poolName);
+            showTaskProgress(data.task_id);
+        } else {
+            showError(data.detail || 'Failed to change permissions');
         }
     } catch (e) {
         showError(`Error: ${e.message}`);
@@ -633,6 +765,7 @@ function openMigrateModal(sourcePool, sourceVolume) {
             <h3>Migrate Volume</h3>
             <button class="close-btn" onclick="closeModal('migrateModal')">×</button>
         </div>
+        ${runningContainerWarningHtml(sourcePool, sourceVolume, 'Migrating')}
         <div class="form-group">
             <label>Source Pool</label>
             <input type="text" value="${escapeHtml(sourcePool)}" disabled>
@@ -893,6 +1026,7 @@ function openDeleteModal(pool, volume) {
             <h3>Delete Volume</h3>
             <button class="close-btn" onclick="closeModal('deleteModal')">×</button>
         </div>
+        ${runningContainerWarningHtml(pool, volume, 'Deleting')}
         <p><strong>Warning:</strong> This action cannot be undone. Make sure you have a backup if needed.</p>
         <div class="form-group">
             <label>Pool</label>
@@ -2246,10 +2380,12 @@ const ACTION_HANDLERS = {
     'open-migrate':        (d) => openMigrateModal(d.pool, d.vol),
     'open-backup':         (d) => openBackupModal(d.pool, d.vol),
     'open-rename':         (d) => openRenameVolumeModal(d.pool, d.vol),
+    'open-permissions':    (d) => openPermissionsModal(d.pool, d.vol),
     'open-delete':         (d) => openDeleteModal(d.pool, d.vol),
     'open-restore':        (d) => openRestoreModal(d.pool, d.file),
     'create-volume':       (d) => createVolume(d.pool),
     'rename-volume':       (d) => renameVolume(d.pool, d.vol),
+    'save-permissions':    (d) => savePermissions(d.pool, d.vol),
     'start-migration':     (d) => startMigration(d.pool, d.vol),
     'start-backup':        (d) => startBackup(d.pool, d.vol),
     'start-restore':       (d) => startRestore(d.pool, d.file),
@@ -2267,13 +2403,18 @@ const ACTION_HANDLERS = {
     'open-task-detail':    (d) => openTaskDetailModalById(d.id),
     'nav-task-detail':     (d) => navigateToTaskDetail(d.id),
     'task-detail-back':    ()  => taskDetailBack(),
+    'toggle-container-tooltip': (d, el) => el && el.classList.toggle('open'),
 };
 
 document.addEventListener('click', (e) => {
     const el = e.target.closest('[data-action]');
+    // Close any open container tooltip when clicking outside its badge.
+    document.querySelectorAll('.container-badge.open').forEach(b => {
+        if (!b.contains(e.target)) b.classList.remove('open');
+    });
     if (!el) return;
     const handler = ACTION_HANDLERS[el.dataset.action];
-    if (handler) handler(el.dataset);
+    if (handler) handler(el.dataset, el);
 });
 
 document.addEventListener('click', (e) => {

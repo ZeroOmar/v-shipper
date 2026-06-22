@@ -26,7 +26,9 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 | `app/config.py` | YAML config load, base64 password decode |
 | `app/models.py` | Pydantic request/response models |
 | `app/api/routes.py` | All REST endpoints |
-| `app/services/volume_service.py` | Volume discovery, disk stats, rename/delete |
+| `app/services/volume_service.py` | Volume discovery, disk stats, rename/delete, permissions (chmod/chown) |
+| `app/services/docker_service.py` | Docker socket client — maps volumes to the containers using them |
+| `app/services/remote_api_client.py` | HTTP client for the v-helper control API |
 | `app/services/migration_service.py` | rsync orchestration, lockfiles |
 | `app/services/backup_service.py` | tar archiving, remote restore via staging |
 | `app/services/task_queue.py` | Sequential queue, progress tracking, crash recovery, per-task log capture |
@@ -71,6 +73,10 @@ docker_hosts:
     pool_type: local          # or remote (rsync daemon)
     remote_host: host:port    # remote only
     rsync_module: module      # remote only
+    api_host: host:port       # optional v-helper control API
+    api_key: secret           # required if api_host set
+    docker_socket: true       # optional: report containers using each volume
+    docker_host_path: /var/docker-volumes  # optional: host path volumes really live at (defaults to pool)
 
 backup_pools:
   - name: backup

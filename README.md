@@ -4,12 +4,13 @@ Docker volume migration and backup tool with a web UI. Stateless, containerized,
 
 <p align="center"> <img src="images/SCR-20260621-taaa.png" alt="Project Screenshot" width="80%"> </p>
 
-
 ## Features
 
 - **Web UI** — responsive dashboard with login, pool browser, and task history
 - **Pool Management** — local pools and remote rsync daemon pools
 - **Volume Migration** — rsync-based with permission preservation and optional verify + delete-source
+- **Volume Permissions** — view and change a volume's owner, group, and octal mode (`chmod -R` / `chown -R`) from the UI, on local and remote (v-helper) pools
+- **Container Awareness** — optional Docker socket integration shows which containers use each volume (with running/stopped status) and warns before migrating, renaming, or deleting a volume that's in use
 - **Backup / Restore** — tar.gz archives to local or remote rsync backup pools
 - **Backup Schedules** — cron-based scheduled backups with configurable retention
 - **Telegram Notifications** — per-topic alerts for backup, migration, restore, and other events
@@ -28,6 +29,13 @@ docker_hosts:
   - name: local-pool
     pool: /var/lib/docker/volumes
     pool_type: local
+    # Optional: report which containers use each volume (requires the Docker
+    # socket mounted into the v-shipper container).
+    docker_socket: true
+    # Optional: host path the volumes really live at, when it differs from the
+    # path v-shipper sees (e.g. a remapped bind mount). Used to match container
+    # mounts to volumes. Defaults to `pool` (identity).
+    docker_host_path: /var/docker-volumes
 
   - name: remote-nas
     pool: /            # placeholder; ignored for remote pools
@@ -255,9 +263,9 @@ curl -X POST -b cookies.txt http://localhost/api/debug/cleanup
 
 The GitHub Actions workflow builds and pushes on semver tag:
 ```bash
-git tag 0.4.5
-git push origin 0.4.5
-# → ghcr.io/zeroomar/v-shipper:0.4.5
+git tag 0.5.0
+git push origin 0.5.0
+# → ghcr.io/zeroomar/v-shipper:0.5.0
 ```
 
 ## Limitations

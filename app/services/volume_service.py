@@ -1,6 +1,8 @@
 """Volume management service."""
 
+import grp
 import os
+import pwd
 import subprocess
 import tempfile
 import time
@@ -61,6 +63,8 @@ class VolumeService:
                     "rsync_module": host.rsync_module,
                     "api_host": host.api_host,
                     "api_key": host.api_key,
+                    "docker_socket": host.docker_socket,
+                    "docker_host_path": host.docker_host_path,
                     "role": "docker",
                 }
 
@@ -405,6 +409,7 @@ class VolumeService:
                     reachable=reachable,
                     has_helper=has_helper,
                     helper_version=helper_version,
+                    docker_socket=pool.get("docker_socket", False),
                     error=error,
                 )
 
@@ -427,6 +432,7 @@ class VolumeService:
                 available_gb=round(available_gb, 2),
                 usage_percent=round(usage_percent, 2),
                 reachable=True,
+                docker_socket=pool.get("docker_socket", False),
                 error=None
             )
         except Exception as e:
@@ -571,7 +577,140 @@ class VolumeService:
         except Exception as e:
             _log("ERROR", f"Failed to rename volume: {e}")
             return False
-    
+
+    def get_volume_permissions(self, pool_name: str, volume_name: str) -> Optional[Dict]:
+        """Read a volume folder's current owner / group / mode for UI prefill.
+
+        Returns {mode, uid, gid, user, group} or None (pool missing, volume
+        missing, or a remote pool with no v-helper configured).
+        """
+        pool = self.get_pool_by_name(pool_name)
+        if not pool:
+            return None
+
+        if self._is_remote_pool(pool):
+            api = client_for_pool(pool)
+            if not api:
+                return None
+            try:
+                return api.stat(volume_name)
+            except RemoteApiError as exc:
+                print(f"[ERROR] Remote stat failed: {exc}", flush=True)
+                return None
+
+        try:
+            volume_path = safe_join(pool["path"], volume_name)
+        except ValueError:
+            return None
+        if not volume_path.exists():
+            return None
+        try:
+            st = volume_path.stat()
+            return {
+                "mode": oct(st.st_mode)[-3:],
+                "uid": st.st_uid,
+                "gid": st.st_gid,
+                "user": self._name_for_uid(st.st_uid),
+                "group": self._name_for_gid(st.st_gid),
+            }
+        except OSError as e:
+            print(f"[ERROR] Failed to stat volume: {e}", flush=True)
+            return None
+
+    @staticmethod
+    def _name_for_uid(uid: int) -> str:
+        try:
+            return pwd.getpwuid(uid).pw_name
+        except KeyError:
+            return str(uid)
+
+    @staticmethod
+    def _name_for_gid(gid: int) -> str:
+        try:
+            return grp.getgrgid(gid).gr_name
+        except KeyError:
+            return str(gid)
+
+    def change_permissions(self, pool_name: str, volume_name: str, mode: Optional[str],
+                           owner_spec: Optional[str], task_id: str = None) -> bool:
+        """Run ``chmod -R`` and/or ``chown -R`` on a volume folder.
+
+        ``mode`` (octal) triggers chmod; ``owner_spec`` (a ``user:group`` string)
+        triggers chown. At least one must be provided. Works on local pools
+        (direct subprocess) and remote pools (via v-helper).
+        """
+        def _log(level: str, msg: str):
+            task_log(task_id, level, msg)
+
+        pool = self.get_pool_by_name(pool_name)
+        if not pool:
+            _log("ERROR", f"Pool {pool_name} not found")
+            return False
+
+        if not mode and not owner_spec:
+            _log("ERROR", "No permission changes requested")
+            return False
+
+        lock_file = self.task_queue.create_lockfile(pool_name, volume_name)
+        try:
+            if self._is_remote_pool(pool):
+                api = client_for_pool(pool)
+                if not api:
+                    _log("ERROR", f"Cannot change permissions in remote pool '{pool_name}' — no v-helper api_host configured")
+                    return False
+                try:
+                    if mode:
+                        _log("INFO", f"Running: chmod -R {mode} {volume_name} (remote via v-helper)")
+                        result = api.chmod(volume_name, mode)
+                        if result.get("output"):
+                            _log("INFO", result["output"])
+                        _log("INFO", f"chmod -R {mode} completed on {volume_name}")
+                    if owner_spec:
+                        _log("INFO", f"Running: chown -R {owner_spec} {volume_name} (remote via v-helper)")
+                        result = api.chown(volume_name, owner_spec)
+                        if result.get("output"):
+                            _log("INFO", result["output"])
+                        _log("INFO", f"chown -R {owner_spec} completed on {volume_name}")
+                    return True
+                except RemoteApiError as exc:
+                    _log("ERROR", f"Remote permission change failed: {exc}")
+                    return False
+
+            # Local pool — run chmod/chown as subprocesses, mirroring rm_rf.
+            try:
+                volume_path = safe_join(pool["path"], volume_name)
+            except ValueError as e:
+                _log("ERROR", f"Path traversal attempt in change_permissions: {e}")
+                return False
+            if not volume_path.exists():
+                _log("ERROR", f"Volume {volume_name} not found")
+                return False
+
+            for argv in self._permission_commands(mode, owner_spec, str(volume_path)):
+                _log("INFO", "Running: " + " ".join(argv))
+                result = subprocess.run(argv, capture_output=True, text=True)
+                if result.stdout.strip():
+                    _log("INFO", result.stdout.strip())
+                if result.stderr.strip():
+                    _log("INFO", result.stderr.strip())
+                if result.returncode != 0:
+                    _log("ERROR", f"{argv[0]} failed with exit code {result.returncode}")
+                    return False
+                _log("INFO", f"{' '.join(argv[:-1])} completed")
+            return True
+        finally:
+            self.task_queue.remove_lockfile(lock_file)
+
+    @staticmethod
+    def _permission_commands(mode: Optional[str], owner_spec: Optional[str], path: str) -> List[List[str]]:
+        """Build the ordered argv list for the requested chmod/chown operations."""
+        commands = []
+        if mode:
+            commands.append(["chmod", "-R", mode, path])
+        if owner_spec:
+            commands.append(["chown", "-R", owner_spec, path])
+        return commands
+
     def create_volume(self, pool_name: str, volume_name: str, task_id: str = None) -> bool:
         """Create a new volume directory."""
         def _log(level: str, msg: str):

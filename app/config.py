@@ -42,6 +42,8 @@ class ConfigManager:
                     rsync_module=host_config.get("rsync_module"),
                     api_host=host_config.get("api_host"),
                     api_key=host_config.get("api_key"),
+                    docker_socket=host_config.get("docker_socket", False),
+                    docker_host_path=host_config.get("docker_host_path"),
                 )
                 docker_hosts.append(host)
 

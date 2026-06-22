@@ -1,7 +1,18 @@
 """Docker service for Docker operations."""
 
 import docker
-from typing import List, Optional
+from typing import List, Optional, Dict
+
+
+def host_path_for_volume(pool: dict, volume_name: str) -> str:
+    """Host-namespace path for a volume folder.
+
+    Docker reports mount sources in the host's namespace, which may differ from the
+    path v-shipper sees. ``docker_host_path`` is the host base directory for the pool;
+    when unset we assume the pool path is already the host path (identity).
+    """
+    base = (pool.get("docker_host_path") or pool.get("path") or "").rstrip("/")
+    return f"{base}/{volume_name}"
 
 
 class DockerService:
@@ -50,6 +61,40 @@ class DockerService:
             print(f"[ERROR] Failed to list Docker containers: {e}", flush=True)
             return []
     
+    def get_volume_container_map(self, pool: dict, volume_names: List[str]) -> Dict[str, List[dict]]:
+        """Map each volume to the containers using it: {volume: [{name, status}]}.
+
+        A container uses a volume if any of its mount sources equals the volume's host
+        path or sits under it (covers sub-folder bind mounts and local-driver volumes
+        whose mountpoint lives there). One pass over the container list — the list API
+        already includes ``Mounts``, so no per-container inspect is needed. Returns an
+        empty map if the socket is unavailable, so callers never break.
+        """
+        result: Dict[str, List[dict]] = {name: [] for name in volume_names}
+        if not self.client:
+            return result
+
+        try:
+            # Snapshot each container's mount sources once.
+            containers = []
+            for container in self.client.containers.list(all=True):
+                sources = [
+                    m.get("Source") for m in (container.attrs.get("Mounts") or [])
+                    if m.get("Source")
+                ]
+                containers.append({"name": container.name, "status": container.status, "sources": sources})
+
+            for name in volume_names:
+                host_path = host_path_for_volume(pool, name)
+                prefix = host_path.rstrip("/") + "/"
+                for c in containers:
+                    if any(s == host_path or s.startswith(prefix) for s in c["sources"]):
+                        result[name].append({"name": c["name"], "status": c["status"]})
+        except Exception as e:
+            print(f"[ERROR] Failed to map containers to volumes: {e}", flush=True)
+
+        return result
+
     def is_healthy(self) -> bool:
         """Check if Docker daemon is accessible."""
         if not self.client:

@@ -98,6 +98,29 @@ class RemoteApiClient:
         """Delete the directory or file named *name* inside VOLUME."""
         self._request("POST", "/fs/rm", {"name": name})
 
+    def stat(self, name: str) -> Dict[str, Any]:
+        """Return current ownership/mode: {mode, uid, gid, user, group}."""
+        path = "/fs/stat?name=" + urllib.parse.quote(name, safe="")
+        return self._request("GET", path)
+
+    def chmod(self, name: str, mode: str) -> Dict[str, Any]:
+        """Run ``chmod -R <mode>`` on *name* inside VOLUME. Returns {ok, command, output}."""
+        return self._request("POST", "/fs/chmod", {"name": name, "mode": mode})
+
+    def chown(self, name: str, owner: str) -> Dict[str, Any]:
+        """Run ``chown -R <owner>`` (a ``user:group`` spec) on *name*. Returns {ok, command, output}."""
+        return self._request("POST", "/fs/chown", {"name": name, "owner": owner})
+
+    def docker_users(self) -> Dict[str, Any]:
+        """Map each remote volume to containers using it: {volume: [{name, status}]}.
+
+        Returns {} if v-helper has no Docker access or predates this endpoint.
+        """
+        try:
+            return self._request("GET", "/docker/users")
+        except RemoteApiError:
+            return {}
+
 
 def client_for_pool(pool: Dict[str, Any]) -> Optional[RemoteApiClient]:
     """Return a RemoteApiClient if the pool has api_host/api_key, else None."""

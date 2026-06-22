@@ -8,6 +8,8 @@ from app.validation import (
     validate_name,
     validate_backup_file,
     validate_pool_path,
+    validate_mode,
+    validate_owner_token,
     validate_cron,
     validate_telegram_token,
     validate_chat_id,
@@ -30,6 +32,8 @@ class _PoolBase(BaseModel):
     rsync_module: Optional[str] = None
     api_host: Optional[str] = None
     api_key: Optional[str] = None
+    docker_socket: bool = False
+    docker_host_path: Optional[str] = None
 
     @field_validator("name")
     @classmethod
@@ -53,6 +57,8 @@ class _PoolBase(BaseModel):
                 raise ValueError(
                     f"pool '{self.name}' has api_host but is missing api_key"
                 )
+        if self.docker_host_path:
+            validate_pool_path(self.docker_host_path, "docker_host_path")
         return self
 
 
@@ -134,6 +140,7 @@ class PoolStats(BaseModel):
     reachable: bool = True
     has_helper: bool = False
     helper_version: Optional[str] = None
+    docker_socket: bool = False
     error: Optional[str] = None
 
 
@@ -264,6 +271,38 @@ class DeleteRequest(BaseModel):
     @classmethod
     def _validate(cls, v, info):
         return validate_name(v, info.field_name)
+
+
+class PermissionsRequest(BaseModel):
+    """Change-permissions request (chmod / chown)."""
+    pool: str
+    volume_name: str
+    mode: Optional[str] = None     # run chmod if present
+    owner: Optional[str] = None    # user token; run chown if owner + group present
+    group: Optional[str] = None    # group token
+
+    @field_validator("pool", "volume_name")
+    @classmethod
+    def _validate(cls, v, info):
+        return validate_name(v, info.field_name)
+
+    @field_validator("mode")
+    @classmethod
+    def _validate_mode(cls, v):
+        return v if v is None else validate_mode(v, "mode")
+
+    @field_validator("owner", "group")
+    @classmethod
+    def _validate_owner(cls, v, info):
+        return v if v is None else validate_owner_token(v, info.field_name)
+
+    @model_validator(mode="after")
+    def _require_change(self):
+        if (self.owner is None) != (self.group is None):
+            raise ValueError("owner and group must be provided together")
+        if not self.mode and self.owner is None:
+            raise ValueError("at least a mode or an owner/group change is required")
+        return self
 
 
 class RestoreRequest(BaseModel):

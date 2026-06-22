@@ -60,6 +60,37 @@ def validate_backup_file(value: str, field: str = "backup_file") -> str:
     return value
 
 
+# ── Permissions (chmod / chown) ──────────────────────────────────────────────
+
+# Octal mode: 3-4 digits, each 0-7 (e.g. "755", "644", "0775").
+_MODE_RE = re.compile(r"^[0-7]{3,4}$")
+# A single user or group token: numeric id, or a Unix-style name. No spaces, ':',
+# '/', or control chars. (Defense-in-depth — subprocess uses list args, never a shell.)
+_OWNER_TOKEN_RE = re.compile(r"^[0-9]+$|^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
+
+
+def validate_mode(value: str, field: str = "mode") -> str:
+    """Validate an octal permission mode (e.g. "755"). Raises ValueError."""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    value = value.strip()
+    if not _MODE_RE.match(value):
+        raise ValueError(f"{field} must be an octal mode like 755 or 0644")
+    return value
+
+
+def validate_owner_token(value: str, field: str = "owner") -> str:
+    """Validate a single user/group token (numeric id or Unix name). Raises ValueError."""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    value = value.strip()
+    if not value:
+        raise ValueError(f"{field} must not be empty")
+    if not _OWNER_TOKEN_RE.match(value):
+        raise ValueError(f"{field} must be a numeric id or a valid user/group name")
+    return value
+
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 def validate_pool_path(value: str, field: str = "path") -> str:

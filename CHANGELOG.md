@@ -2,6 +2,22 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.5.0
+
+### Added
+
+- **Volume permissions (chmod / chown)** — a per-volume **Permissions** button opens a modal pre-filled with the folder's current owner, group, and octal mode. Editing the permission runs `chmod -R`, editing the user/group runs `chown -R`, or both — as a tracked task whose verbose logs show the exact command and its output. Works on local pools (direct subprocess) and remote pools (via v-helper). New endpoints: `GET /api/permissions` (read current owner/group/mode) and `POST /api/permissions` (apply). Permission/owner inputs are validated at the boundary (`validate_mode`, `validate_owner_token`).
+- **Docker socket support — "which containers use this volume"** — when a docker pool sets `docker_socket: true`, each volume row shows an aggregate status badge (running/mixed/stopped dot + container count) with a hover/click tooltip listing every container and its status. Matching is host-path-prefix based: a volume's host path (`docker_host_path/<name>`, falling back to the pool path) is matched against container mount sources, covering sub-folder bind mounts and local-driver volumes. Local pools query v-shipper's own Docker socket; remote pools query the remote socket via v-helper's `GET /docker/users`. New endpoint: `GET /api/containers?pool=`. New optional pool config keys: `docker_socket`, `docker_host_path`.
+- **Running-container warning** — opening the Migrate, Rename, or Delete modal for a volume with running containers shows a warning banner naming them (informational — the action stays available).
+
+### Changed
+
+- **Backup pool viewer grouping** — backups are now grouped by **app (volume) name** first, with a sub-group per **source pool**, instead of a flat group per pool/volume pair. Makes it obvious when the same app has been backed up from multiple pools.
+
+### Fixed
+
+- **Backup list overflow on mobile** — long backup filenames pushed the Restore/Delete buttons out of the row. The name now wraps, the buttons keep their size, and narrow screens stack the name above a right-aligned button row.
+
 ## 0.4.5
 
 ### Added

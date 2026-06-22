@@ -8,12 +8,14 @@ from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from fastapi.responses import JSONResponse
 from app.models import (
     LoginRequest, PoolsListResponse, VolumesListResponse, VolumeDetailResponse,
-    MigrateRequest, BackupRequest, RenameRequest, DeleteRequest, RestoreRequest, PoolCreateRequest,
+    MigrateRequest, BackupRequest, RenameRequest, DeleteRequest, PermissionsRequest, RestoreRequest, PoolCreateRequest,
     TaskResponse, TaskProgressResponse, TasksListResponse, HealthResponse, PoolStats, VolumeInfo,
     BackupSchedule, BackupScheduleCreate, SchedulesResponse, VolumeCreateRequest,
     NotificationConfig, NotificationCreate, NotificationsResponse,
 )
 from app.services.volume_service import get_volume_service
+from app.services.docker_service import get_docker_service
+from app.services.remote_api_client import client_for_pool
 from app.services.migration_service import get_migration_service
 from app.services.backup_service import get_backup_service
 from app.services.task_queue import get_task_queue
@@ -145,6 +147,8 @@ async def list_pools(session: dict = Depends(require_auth)):
                 "rsync_module": host.rsync_module,
                 "api_host": host.api_host,
                 "api_key": host.api_key,
+                "docker_socket": host.docker_socket,
+                "docker_host_path": host.docker_host_path,
                 "role": "docker",
             }
             stats = volume_service.get_pool_stats(pool_info)
@@ -189,6 +193,33 @@ async def list_volumes(pool: str, session: dict = Depends(require_auth)):
     except Exception as e:
         print(f"[ERROR] Failed to list volumes: {e}", flush=True)
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/api/containers")
+async def list_volume_containers(pool: str, session: dict = Depends(require_auth)):
+    """Map each volume in a pool to the containers using it: {volume: [{name, status}]}.
+
+    Returns {} when the pool has no docker_socket flag. Never raises on Docker errors —
+    Docker latency/unavailability must not break the volume view.
+    """
+    pool = _validate_param(pool, "pool")
+    config = get_config()
+    volume_service = get_volume_service(config)
+    pool_cfg = volume_service.get_pool_by_name(pool)
+    if not pool_cfg or not pool_cfg.get("docker_socket"):
+        return {}
+
+    try:
+        if pool_cfg.get("pool_type") == "remote":
+            api = client_for_pool(pool_cfg)
+            return api.docker_users() if api else {}
+
+        volumes, _ = volume_service.list_volumes(pool)
+        volume_names = [v.name for v in volumes]
+        return get_docker_service().get_volume_container_map(pool_cfg, volume_names)
+    except Exception as e:
+        print(f"[ERROR] Failed to list volume containers: {e}", flush=True)
+        return {}
 
 
 @router.get("/api/volume/{pool}/{volume_name}", response_model=VolumeDetailResponse)
@@ -436,6 +467,64 @@ async def delete_volume(request: DeleteRequest, session: dict = Depends(require_
         raise
     except Exception as e:
         print(f"[ERROR] Delete error: {e}", flush=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/api/permissions")
+async def get_permissions(pool: str, volume: str, session: dict = Depends(require_auth)):
+    """Return a volume folder's current owner / group / mode for UI prefill."""
+    pool = _validate_param(pool, "pool")
+    volume = _validate_param(volume, "volume")
+    config = get_config()
+    volume_service = get_volume_service(config)
+    perms = volume_service.get_volume_permissions(pool, volume)
+    if perms is None:
+        raise HTTPException(status_code=404, detail="Volume not found or permissions unavailable")
+    return perms
+
+
+@router.post("/api/permissions")
+async def change_permissions(request: PermissionsRequest, session: dict = Depends(require_auth)):
+    """Change a volume folder's permissions (chmod) and/or ownership (chown)."""
+    try:
+        config = get_config()
+        volume_service = get_volume_service(config)
+        task_queue = get_task_queue()
+
+        detail = volume_service.get_volume_detail(request.pool, request.volume_name)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Volume not found")
+
+        owner_spec = f"{request.owner}:{request.group}" if request.owner is not None else None
+
+        task_id = task_queue.add_task(
+            task_type="permissions",
+            pool=request.pool,
+            volume_name=request.volume_name
+        )
+
+        task_queue.start_task(task_id)
+        def _chperm():
+            try:
+                success = volume_service.change_permissions(
+                    request.pool, request.volume_name, request.mode, owner_spec, task_id=task_id
+                )
+                if not success:
+                    task_queue.complete_task(task_id, success=False, error="Failed to change permissions")
+                else:
+                    task_queue.complete_task(task_id, success=True)
+            except Exception as exc:
+                task_queue.complete_task(task_id, success=False, error=str(exc))
+
+        thread = threading.Thread(target=_chperm, daemon=True)
+        thread.start()
+
+        return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type="permissions")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Permissions error: {e}", flush=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 
