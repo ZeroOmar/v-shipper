@@ -480,7 +480,7 @@ class NotificationCreate(BaseModel):
     @field_validator("topics")
     @classmethod
     def _validate_topics(cls, v):
-        allowed = {"backup", "schedule", "migrate", "restore", "delete", "rename", "create"}
+        allowed = {"backup", "schedule", "migrate", "restore", "delete", "rename", "create", "permissions"}
         for t in v:
             if t not in allowed:
                 raise ValueError(f"unknown topic: {t}")

@@ -733,7 +733,19 @@ async function openPermissionsModal(poolName, volumeName) {
                 <label>Permission (octal)</label>
                 <input type="text" id="permMode" value="${escapeHtml(_permissionDefaults.mode)}" maxlength="4" pattern="[0-7]{3,4}" title="Octal mode, e.g. 755">
             </div>
-            <p class="hint" style="opacity:.7;font-size:12px;">Applied recursively (-R). Only changed fields are applied.</p>
+            <p class="hint" style="opacity:.7;font-size:12px;">Applied recursively (-R). By default only changed fields are applied.</p>
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="permForceMode">
+                    <span>Apply chmod even if unchanged (re-apply recursively)</span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="permForceOwner">
+                    <span>Apply chown even if unchanged (re-apply recursively)</span>
+                </label>
+            </div>
             ${containerControlCheckboxesHtml(poolName, volumeName, { start: true })}
             <button class="btn success" style="width:100%;" data-action="save-permissions" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(volumeName)}">Apply</button>
         </div>`;
@@ -746,9 +758,14 @@ async function savePermissions(poolName, volumeName) {
     const group = document.getElementById('permGroup')?.value.trim();
     const mode = document.getElementById('permMode')?.value.trim();
 
+    const forceMode = !!document.getElementById('permForceMode')?.checked;
+    const forceOwner = !!document.getElementById('permForceOwner')?.checked;
+    const modeChanged = mode && mode !== _permissionDefaults.mode;
+    const ownerChanged = (user && user !== _permissionDefaults.user) || (group && group !== _permissionDefaults.group);
+
     const body = { pool: poolName, volume_name: volumeName };
-    if (mode && mode !== _permissionDefaults.mode) body.mode = mode;
-    if ((user && user !== _permissionDefaults.user) || (group && group !== _permissionDefaults.group)) {
+    if (mode && (forceMode || modeChanged)) body.mode = mode;
+    if ((user || group) && (forceOwner || ownerChanged)) {
         if (!user || !group) { showError('User and Group are both required for an ownership change'); return; }
         body.owner = user;
         body.group = group;
@@ -1887,6 +1904,7 @@ const NOTIFICATION_TOPICS = [
     { id: 'delete',   label: 'Delete',            desc: 'When a volume is deleted' },
     { id: 'rename',   label: 'Rename',            desc: 'When a volume is renamed' },
     { id: 'create',   label: 'Create',            desc: 'When a new volume is created' },
+    { id: 'permissions', label: 'Permissions',    desc: 'When a volume\'s permissions/ownership change completes' },
 ];
 
 const NOTIFICATION_DEFAULT_TEMPLATE = [

@@ -51,6 +51,7 @@ _TASK_TYPE_LABELS: Dict[str, str] = {
     "delete": "Delete",
     "rename": "Rename",
     "create": "Create Volume",
+    "permissions": "Permissions",
 }
 
 _PARAM_LABELS: Dict[str, str] = {
@@ -64,6 +65,8 @@ _PARAM_LABELS: Dict[str, str] = {
     "pool":              "Pool",
     "volume_name":       "Volume",
     "new_name":          "New Name",
+    "mode":              "Mode",
+    "owner":             "Owner",
     "verify":            "Verify",
     "delete_source":     "Delete Source",
     "compress":          "Compress",
@@ -176,7 +179,7 @@ class NotificationService:
             return "backup"
         if t == "scheduled_backup":
             return "schedule"
-        if t in ("migrate", "restore", "delete", "rename", "create"):
+        if t in ("migrate", "restore", "delete", "rename", "create", "permissions"):
             return t
         return None
 

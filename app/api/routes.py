@@ -512,7 +512,9 @@ async def change_permissions(request: PermissionsRequest, session: dict = Depend
         task_id = task_queue.add_task(
             task_type="permissions",
             pool=request.pool,
-            volume_name=request.volume_name
+            volume_name=request.volume_name,
+            mode=request.mode,
+            owner=owner_spec,
         )
 
         task_queue.start_task(task_id)

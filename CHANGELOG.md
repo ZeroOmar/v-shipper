@@ -2,6 +2,19 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.7.0
+
+Coordinated release with v-helper `0.7.0` (shared version line). No functional change to v-helper this release; the bump keeps the two version lines aligned so connected helpers are not flagged "out of date".
+
+### Added
+
+- **Permissions notifications** — permission/ownership changes (chmod/chown) now fire task-completion notifications like every other operation. A new "Permissions" topic is available in the notification settings, and the permissions task records the applied mode/owner so they appear in the notification's parameters block.
+- **Re-apply permissions even when unchanged** — the Edit Permissions modal gained two checkboxes, "Apply chmod even if unchanged" and "Apply chown even if unchanged". By default only changed fields are sent; checking these forces a recursive `chmod -R` / `chown -R` even when the displayed top-level value already matches, which is the way to fix permissions/ownership that have drifted on nested files.
+
+### Fixed
+
+- **Edit Schedule checkboxes misaligned** — the "Stop / Start container(s)" checkboxes in the schedule form inherited the form's column layout, stacking the box above its label and centering it. They now render inline, box-then-label, left-aligned.
+
 ## 0.6.0
 
 Coordinated release with v-helper `0.6.0` (shared version line). Remote container control requires v-helper `0.6.0`+.

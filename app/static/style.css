@@ -1442,6 +1442,7 @@ body.dark .log-line { color: #C8DCFF; }
 
 .schedule-form { display: flex; flex-direction: column; gap: 16px; }
 .schedule-form > label { display: flex; flex-direction: column; font-size: 13px; font-weight: 500; color: var(--md-on-surface); }
+.schedule-form > label.checkbox-label { flex-direction: row; align-items: center; }
 .schedule-form input[type="text"],
 .schedule-form input[type="number"],
 .schedule-form select {
