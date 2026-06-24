@@ -137,7 +137,15 @@ class BackupService:
                 error_msg = "Archive creation failed"
                 self.task_queue.complete_task(task_id, success=False, error=error_msg)
                 return False
-            
+
+            # Make the archive world-accessible (0o777) so it can be read/managed
+            # regardless of the user that owns the backup pool. For remote pools
+            # this is the staging copy; rsync -a (-p) carries the mode to the remote.
+            try:
+                Path(archive_path).chmod(0o777)
+            except OSError as e:
+                print(f"[TASK:{task_id}] Warning: could not chmod archive to 777: {e}", flush=True)
+
             # If remote backup pool, transfer archive via rsync
             if remote_backup_pool:
                 self.task_queue.update_progress(task_id, {

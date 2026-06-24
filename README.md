@@ -2,7 +2,7 @@
 
 Docker volume migration and backup tool with a web UI. Stateless, containerized, Alpine-based.
 
-<p align="center"> <img src="images/SCR-20260621-taaa.png" alt="Project Screenshot" width="80%"> </p>
+<p align="center"> <img src="images/SCR-20260621-taaa.png" alt="Project Screenshot" width="100%"> </p>
 
 ## Features
 
@@ -266,9 +266,9 @@ curl -X POST -b cookies.txt http://localhost/api/debug/cleanup
 
 The GitHub Actions workflow builds and pushes on semver tag:
 ```bash
-git tag 0.7.0
-git push origin 0.7.0
-# → ghcr.io/zeroomar/v-shipper:0.7.0
+git tag 0.8.0
+git push origin 0.8.0
+# → ghcr.io/zeroomar/v-shipper:0.8.0
 ```
 
 ## Limitations

@@ -931,7 +931,7 @@ input[type="checkbox"] {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  z-index: 2000;
+  z-index: 3000; /* above modals (1000) and the settings overlay (2000) so toasts are never hidden behind a blur */
 }
 
 .toast {
@@ -1649,6 +1649,53 @@ body.dark .log-line { color: #C8DCFF; }
 .backup-item:last-child { border-bottom: none; }
 .backup-item-info { min-width: 0; flex: 1; }
 .backup-item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* ── Bulk actions ─────────────────────────────────────────── */
+.bulk-check {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  cursor: pointer;
+  accent-color: var(--md-primary);
+}
+.volume-item.bulk-selected,
+.backup-item.bulk-selected {
+  background: var(--md-primary-container);
+  border-color: var(--md-primary);
+}
+
+.bulk-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: var(--md-r-lg);
+  background: var(--md-primary-container);
+  color: var(--md-on-primary-container);
+  border: 1.5px solid var(--md-primary);
+}
+.bulk-toolbar-count { font-weight: 600; }
+.bulk-toolbar-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.bulk-toolbar-right { margin-left: auto; display: flex; gap: 6px; }
+
+.bulk-items-list {
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1.5px solid var(--md-outline-variant);
+  border-radius: var(--md-r-md);
+  background: var(--md-surface-container-lowest);
+  padding: 6px;
+}
+.bulk-items-row {
+  padding: 4px 8px;
+  font-size: 13px;
+  font-family: var(--font-mono, monospace);
+  word-break: break-all;
+  border-radius: var(--md-r-sm, 4px);
+}
+.bulk-items-row:nth-child(odd) { background: var(--md-surface-container-low); }
 .backup-item-name {
   font-size: 13px;
   font-family: monospace;

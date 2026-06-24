@@ -339,6 +339,147 @@ class RestoreRequest(BaseModel):
         return v if v is None else validate_name(v, "rename_dest")
 
 
+# Conflict handling for bulk migrate/restore. "skip" is resolved by the bulk
+# runner (skip items whose destination already exists); "overwrite"/"merge" are
+# passed through to the underlying service as a ConflictResolution.
+BulkConflict = Optional[Literal["skip", "overwrite", "merge"]]
+
+_MAX_BULK_ITEMS = 500
+
+
+def _validate_name_list(values, field: str):
+    if not values:
+        raise ValueError(f"{field} must not be empty")
+    if len(values) > _MAX_BULK_ITEMS:
+        raise ValueError(f"{field} exceeds the {_MAX_BULK_ITEMS}-item limit")
+    return [validate_name(v, field) for v in values]
+
+
+class BulkBackupRequest(BaseModel):
+    """Back up multiple volumes from one pool to one backup pool."""
+    source_pool: str
+    source_volumes: List[str]
+    backup_pool: str
+    verify: bool = True
+    stop_containers_before: bool = False
+    start_containers_after: bool = False
+
+    @field_validator("source_pool", "backup_pool")
+    @classmethod
+    def _validate_pool(cls, v, info):
+        return validate_name(v, info.field_name)
+
+    @field_validator("source_volumes")
+    @classmethod
+    def _validate_volumes(cls, v):
+        return _validate_name_list(v, "source_volumes")
+
+
+class BulkMigrateRequest(BaseModel):
+    """Migrate multiple volumes from one pool to one destination pool."""
+    source_pool: str
+    source_volumes: List[str]
+    dest_pool: str
+    verify: bool = True
+    delete_source: bool = False
+    conflict_resolution: BulkConflict = "skip"
+    stop_containers_before: bool = False
+    start_containers_after: bool = False
+
+    @field_validator("source_pool", "dest_pool")
+    @classmethod
+    def _validate_pool(cls, v, info):
+        return validate_name(v, info.field_name)
+
+    @field_validator("source_volumes")
+    @classmethod
+    def _validate_volumes(cls, v):
+        return _validate_name_list(v, "source_volumes")
+
+
+class BulkDeleteRequest(BaseModel):
+    """Delete multiple volumes or backup artifacts from one pool."""
+    pool: str
+    volumes: List[str]
+    confirm: bool = False
+    stop_containers_before: bool = False
+
+    @field_validator("pool")
+    @classmethod
+    def _validate_pool(cls, v, info):
+        return validate_name(v, info.field_name)
+
+    @field_validator("volumes")
+    @classmethod
+    def _validate_volumes(cls, v):
+        return _validate_name_list(v, "volumes")
+
+
+class BulkPermissionsRequest(BaseModel):
+    """Apply the same chmod/chown to multiple volumes in one pool."""
+    pool: str
+    volumes: List[str]
+    mode: Optional[str] = None
+    owner: Optional[str] = None
+    group: Optional[str] = None
+    stop_containers_before: bool = False
+    start_containers_after: bool = False
+
+    @field_validator("pool")
+    @classmethod
+    def _validate_pool(cls, v, info):
+        return validate_name(v, info.field_name)
+
+    @field_validator("volumes")
+    @classmethod
+    def _validate_volumes(cls, v):
+        return _validate_name_list(v, "volumes")
+
+    @field_validator("mode")
+    @classmethod
+    def _validate_mode(cls, v):
+        return v if v is None else validate_mode(v, "mode")
+
+    @field_validator("owner", "group")
+    @classmethod
+    def _validate_owner(cls, v, info):
+        return v if v is None else validate_owner_token(v, info.field_name)
+
+    @model_validator(mode="after")
+    def _require_change(self):
+        if (self.owner is None) != (self.group is None):
+            raise ValueError("owner and group must be provided together")
+        if not self.mode and self.owner is None:
+            raise ValueError("at least a mode or an owner/group change is required")
+        return self
+
+
+class BulkRestoreRequest(BaseModel):
+    """Restore multiple backup archives from one backup pool into one pool.
+
+    Each archive's destination volume name is derived from its filename (the
+    pool prefix and timestamp are stripped), matching the single-restore default.
+    """
+    backup_pool: str
+    backup_files: List[str]
+    dest_pool: str
+    conflict_resolution: BulkConflict = "skip"
+
+    @field_validator("backup_pool", "dest_pool")
+    @classmethod
+    def _validate_pool(cls, v, info):
+        return validate_name(v, info.field_name)
+
+    @field_validator("backup_files")
+    @classmethod
+    def _validate_files(cls, v):
+        if not v:
+            raise ValueError("backup_files must not be empty")
+        if len(v) > _MAX_BULK_ITEMS:
+            raise ValueError(f"backup_files exceeds the {_MAX_BULK_ITEMS}-item limit")
+        return [validate_backup_file(f) for f in v]
+
+
 class PoolCreateRequest(BaseModel):
     """Create new pool request."""
     name: str

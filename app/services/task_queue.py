@@ -5,6 +5,7 @@ import sys
 import uuid
 import json
 import time
+import queue
 from typing import Dict, Any, Optional, Callable, List
 from threading import Thread, Lock
 from pathlib import Path
@@ -57,7 +58,38 @@ class TaskQueue:
         Path(config_dir).mkdir(parents=True, exist_ok=True)
         self.tasks_file = Path(config_dir) / "vshipper_tasks.json"
         self._load_tasks()
-    
+
+        # Single worker thread drains this FIFO so tasks run strictly one at a
+        # time. Endpoints/scheduler enqueue runnables via submit(); a task
+        # triggered while another runs waits its turn as "pending".
+        self._work_queue: "queue.Queue" = queue.Queue()
+        self._worker = Thread(target=self._worker_loop, daemon=True)
+        self._worker.start()
+
+    def submit(self, task_id: str, runnable: Callable[[], Any]) -> None:
+        """Enqueue an already-created task's runnable for sequential execution."""
+        self._work_queue.put((task_id, runnable))
+
+    def _worker_loop(self) -> None:
+        """Run queued tasks one at a time, in the order they were submitted."""
+        while True:
+            task_id, runnable = self._work_queue.get()
+            try:
+                task = self.tasks.get(task_id)
+                # Skip tasks finalized or removed before their turn (e.g. marked
+                # failed by restart recovery, or a future cancel).
+                if not task or task.get("status") != "pending":
+                    continue
+                self.start_task(task_id)
+                runnable()
+            except Exception as e:
+                print(f"[TASK:{task_id}] Unhandled error in task: {e}", flush=True)
+                task = self.tasks.get(task_id)
+                if task and task.get("status") not in ("completed", "failed"):
+                    self.complete_task(task_id, success=False, error=str(e))
+            finally:
+                self._work_queue.task_done()
+
     def add_task(self, task_type: str, **kwargs) -> str:
         """Add a new task to the queue."""
         task_id = str(uuid.uuid4())
@@ -105,16 +137,23 @@ class TaskQueue:
             self._save_tasks()
     
     def start_task(self, task_id: str):
-        """Mark task as running."""
+        """Mark task as running.
+
+        Idempotent: a task is started once by the queue worker, so a later
+        start_task() from the service running it is a no-op and doesn't log a
+        second "Started" line (the task was already logged "Created" on enqueue).
+        """
         if task_id not in self.tasks:
             return
-        
+
         with self.lock:
             task = self.tasks[task_id]
+            if task["status"] == "running":
+                return  # already started — don't re-stamp or double-log
             task["status"] = "running"
             task["started_at"] = time.time()
             self.running_task_id = task_id
-        
+
         print(f"[TASK:{task_id}] Started", flush=True)
     
     def complete_task(self, task_id: str, success: bool = True, error: Optional[str] = None):

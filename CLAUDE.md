@@ -32,7 +32,8 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 | `app/services/remote_api_client.py` | HTTP client for the v-helper control API |
 | `app/services/migration_service.py` | rsync orchestration, lockfiles |
 | `app/services/backup_service.py` | tar archiving, remote restore via staging |
-| `app/services/task_queue.py` | Sequential queue, progress tracking, crash recovery, per-task log capture |
+| `app/services/task_queue.py` | Single-worker FIFO queue (serial execution), progress tracking, crash recovery, per-task log capture |
+| `app/services/bulk_service.py` | Runs a set of single-item ops sequentially under one summary task (mirrors scheduled-backup grouping) |
 | `app/services/scheduler_service.py` | APScheduler cron backup jobs, retention (local + remote), singleton |
 | `app/templates/index.html` | SPA shell |
 | `app/static/main.js` | All client logic — polling, modals, progress |
@@ -42,7 +43,7 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 
 ## Architecture patterns
 
-- **Sequential ops only** — one migration/backup at a time; tasks queue in memory
+- **Sequential ops only** — a single worker thread in `task_queue.py` drains an in-memory FIFO; endpoints/scheduler/bulk `submit()` a task and it waits as "pending" until its turn. One migration/backup/etc. runs at a time. Scheduled and bulk runs are one summary task whose sub-tasks run synchronously inside it (they do not re-enter the queue)
 - **Lockfiles** at `{tmp_dir}/locks/<pool>_<volume>.lock` — cooperative exclusive locks, always wrap in try/finally
 - **Progress** stored in-memory, polled by frontend every 2s via `GET /api/task/<id>/progress`
 - **Task persistence** to `{config_dir}/vshipper_tasks.json` — incomplete tasks → marked failed on restart

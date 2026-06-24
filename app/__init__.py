@@ -7,7 +7,7 @@
 import warnings as _warnings
 _warnings.filterwarnings("ignore", message="TripleDES has been moved")
 
-# Single source of truth for the app version. v-shipper and v-helper share a
-# version line — both bump together on each coordinated release — so v-shipper
-# can compare a connected v-helper's version against its own.
-__version__ = "0.7.0"
+# Single source of truth for the app version. v-shipper and v-helper version
+# independently — each is compared against its own latest GitHub release (the
+# UI checks the v-shipper and v-helper tag lists separately).
+__version__ = "0.8.0"

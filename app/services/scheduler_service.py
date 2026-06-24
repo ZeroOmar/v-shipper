@@ -3,7 +3,6 @@
 import json
 import subprocess
 import tempfile
-import threading
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -53,7 +52,7 @@ class SchedulerService:
             return
         try:
             self._scheduler.add_job(
-                self._run_backup_job,
+                self._enqueue_backup_job,
                 CronTrigger.from_crontab(job['cron'], timezone='UTC'),
                 id=job_id,
                 replace_existing=True,
@@ -165,25 +164,33 @@ class SchedulerService:
     def trigger_now(self, job_id: str) -> None:
         if job_id not in self.jobs:
             return
-        t = threading.Thread(target=self._run_backup_job, args=[job_id], daemon=True)
-        t.start()
+        self._enqueue_backup_job(job_id)
 
     # ── Execution ─────────────────────────────────────────────────────────────
 
-    def _run_backup_job(self, job_id: str) -> None:
+    def _enqueue_backup_job(self, job_id: str) -> None:
+        """Create the summary task and hand the whole job to the task queue, so a
+        scheduled (or manually triggered) backup waits its turn behind any other
+        running task instead of overlapping it. The job runs as a single queued
+        unit; its per-volume backups run sequentially inside it."""
+        job = self.jobs.get(job_id)
+        if not job:
+            return
+        summary_task_id = self._task_queue.add_task(
+            'scheduled_backup',
+            job_id=job_id,
+            job_name=job['name'],
+            total_volumes=len(job['volumes']),
+            backup_pool=job['backup_pool'],
+        )
+        self._task_queue.submit(summary_task_id, lambda: self._run_backup_job(job_id, summary_task_id))
+
+    def _run_backup_job(self, job_id: str, summary_task_id: str) -> None:
         job = self.jobs.get(job_id)
         if not job:
             return
 
         volumes = job['volumes']
-        summary_task_id = self._task_queue.add_task(
-            'scheduled_backup',
-            job_id=job_id,
-            job_name=job['name'],
-            total_volumes=len(volumes),
-            backup_pool=job['backup_pool'],
-        )
-        self._task_queue.start_task(summary_task_id)
         print(f"[TASK:{summary_task_id}] Starting scheduled backup '{job['name']}' — {len(volumes)} volume(s)", flush=True)
 
         n = len(volumes)

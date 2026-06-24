@@ -1,7 +1,7 @@
 """API routes for v-shipper."""
 
 import base64
-import threading
+import re
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Depends, Request, Response
@@ -12,12 +12,14 @@ from app.models import (
     TaskResponse, TaskProgressResponse, TasksListResponse, HealthResponse, PoolStats, VolumeInfo,
     BackupSchedule, BackupScheduleCreate, SchedulesResponse, VolumeCreateRequest,
     NotificationConfig, NotificationCreate, NotificationsResponse,
+    BulkBackupRequest, BulkMigrateRequest, BulkDeleteRequest, BulkPermissionsRequest, BulkRestoreRequest,
 )
 from app.services.volume_service import get_volume_service
 from app.services.docker_service import get_docker_service
 from app.services.remote_api_client import client_for_pool
 from app.services.migration_service import get_migration_service
 from app.services.backup_service import get_backup_service
+from app.services.bulk_service import get_bulk_service
 from app.services.task_queue import get_task_queue
 from app.services.scheduler_service import get_scheduler_service
 from app.services.notification_service import get_notification_service
@@ -302,7 +304,7 @@ async def migrate_volume(request: MigrateRequest, session: dict = Depends(requir
                 start_containers_after=request.start_containers_after,
             )
 
-        threading.Thread(target=_migrate, daemon=True).start()
+        task_queue.submit(task_id, _migrate)
         return TaskResponse(task_id=task_id, status="pending", progress_percent=0)
 
     except HTTPException:
@@ -345,9 +347,8 @@ async def backup_volume(request: BackupRequest, session: dict = Depends(require_
                 start_containers_after=request.start_containers_after,
             )
         
-        thread = threading.Thread(target=_backup, daemon=True)
-        thread.start()
-        
+        task_queue.submit(task_id, _backup)
+
         return TaskResponse(task_id=task_id, status="pending", progress_percent=0)
     
     except HTTPException:
@@ -370,7 +371,6 @@ async def create_volume(request: VolumeCreateRequest, session: dict = Depends(re
             pool=request.pool,
             volume_name=request.volume_name,
         )
-        task_queue.start_task(task_id)
 
         def _create():
             try:
@@ -382,7 +382,7 @@ async def create_volume(request: VolumeCreateRequest, session: dict = Depends(re
             except Exception as exc:
                 task_queue.complete_task(task_id, success=False, error=str(exc))
 
-        threading.Thread(target=_create, daemon=True).start()
+        task_queue.submit(task_id, _create)
         return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type="create")
     except HTTPException:
         raise
@@ -405,7 +405,6 @@ async def rename_volume(request: RenameRequest, session: dict = Depends(require_
             volume_name=request.old_name,
             new_name=request.new_name,
         )
-        task_queue.start_task(task_id)
 
         def _rename():
             try:
@@ -420,7 +419,7 @@ async def rename_volume(request: RenameRequest, session: dict = Depends(require_
             except Exception as exc:
                 task_queue.complete_task(task_id, success=False, error=str(exc))
 
-        threading.Thread(target=_rename, daemon=True).start()
+        task_queue.submit(task_id, _rename)
         return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type="rename")
 
     except HTTPException:
@@ -456,7 +455,6 @@ async def delete_volume(request: DeleteRequest, session: dict = Depends(require_
             volume_name=request.volume_name
         )
 
-        task_queue.start_task(task_id)
         def _delete():
             try:
                 success = volume_service.delete_volume(
@@ -470,8 +468,7 @@ async def delete_volume(request: DeleteRequest, session: dict = Depends(require_
             except Exception as exc:
                 task_queue.complete_task(task_id, success=False, error=str(exc))
 
-        thread = threading.Thread(target=_delete, daemon=True)
-        thread.start()
+        task_queue.submit(task_id, _delete)
 
         return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type="delete")
     
@@ -517,7 +514,6 @@ async def change_permissions(request: PermissionsRequest, session: dict = Depend
             owner=owner_spec,
         )
 
-        task_queue.start_task(task_id)
         def _chperm():
             try:
                 success = volume_service.change_permissions(
@@ -532,8 +528,7 @@ async def change_permissions(request: PermissionsRequest, session: dict = Depend
             except Exception as exc:
                 task_queue.complete_task(task_id, success=False, error=str(exc))
 
-        thread = threading.Thread(target=_chperm, daemon=True)
-        thread.start()
+        task_queue.submit(task_id, _chperm)
 
         return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type="permissions")
 
@@ -592,12 +587,243 @@ async def restore_backup(request: RestoreRequest, session: dict = Depends(requir
                 conflict_resolution=request.conflict_resolution,
             )
 
-        threading.Thread(target=_restore, daemon=True).start()
+        task_queue.submit(task_id, _restore)
         return TaskResponse(task_id=task_id, status="pending", task_type="restore", progress_percent=0)
     except HTTPException:
         raise
     except Exception as e:
         print(f"[ERROR] Restore error: {e}", flush=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── Bulk actions ──────────────────────────────────────────────────────────────
+# Each bulk endpoint validates, builds one operation per selected item, and hands
+# them to the bulk service, which runs them sequentially under a single summary
+# task (mirrors the scheduled-backup grouping). Returns the summary task id.
+
+def _bulk_conflict_for_service(bulk_conflict):
+    """Translate a BulkConflict into a service ConflictResolution. "skip" is
+    handled by a per-item precheck, so the service itself receives None."""
+    return None if bulk_conflict == "skip" else bulk_conflict
+
+
+def _derive_restore_volume(backup_file: str) -> str:
+    """Default destination volume name for a backup archive — strip the .tar.gz
+    suffix, a trailing _YYYYMMDD_HHMMSS stamp, and the leading pool prefix.
+    Mirrors the single-restore default in the UI."""
+    stripped = re.sub(r"\.tar\.gz$", "", backup_file)
+    stripped = re.sub(r"_\d{8}_\d{6}$", "", stripped)
+    return stripped.split("_", 1)[1] if "_" in stripped else stripped
+
+
+@router.post("/api/bulk/backup", response_model=TaskResponse)
+async def bulk_backup(request: BulkBackupRequest, session: dict = Depends(require_auth)):
+    """Back up multiple volumes sequentially under one summary task."""
+    try:
+        config = get_config()
+        volume_service = get_volume_service(config)
+        backup_service = get_backup_service(config, volume_service)
+
+        operations = []
+        for vol in request.source_volumes:
+            operations.append({
+                "item": f"{request.source_pool}/{vol}",
+                "lock": (request.source_pool, vol),
+                "sub_type": "backup",
+                "sub_params": {
+                    "source_pool": request.source_pool,
+                    "source_volume": vol,
+                    "backup_pool": request.backup_pool,
+                    "verify": request.verify,
+                },
+                "run": (lambda stid, v=vol: backup_service.backup_volume(
+                    stid, request.source_pool, v, request.backup_pool,
+                    verify=request.verify,
+                    stop_containers_before=request.stop_containers_before,
+                    start_containers_after=request.start_containers_after,
+                )),
+            })
+
+        label = f"Backup {len(operations)} volume(s) → {request.backup_pool}"
+        task_id = get_bulk_service().enqueue("backup", label, operations)
+        return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type="bulk_backup")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Bulk backup error: {e}", flush=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/api/bulk/migrate", response_model=TaskResponse)
+async def bulk_migrate(request: BulkMigrateRequest, session: dict = Depends(require_auth)):
+    """Migrate multiple volumes sequentially under one summary task."""
+    try:
+        config = get_config()
+        volume_service = get_volume_service(config)
+        migration_service = get_migration_service(config, volume_service)
+
+        dest_pool = volume_service.get_pool_by_name(request.dest_pool)
+        service_conflict = _bulk_conflict_for_service(request.conflict_resolution)
+        skip_existing = request.conflict_resolution == "skip"
+
+        operations = []
+        for vol in request.source_volumes:
+            op = {
+                "item": f"{request.source_pool}/{vol}",
+                "lock": (request.source_pool, vol),
+                "sub_type": "migrate",
+                "sub_params": {
+                    "source_pool": request.source_pool,
+                    "source_volume": vol,
+                    "dest_pool": request.dest_pool,
+                    "verify": request.verify,
+                    "delete_source": request.delete_source,
+                },
+                "run": (lambda stid, v=vol: migration_service.migrate_volume(
+                    stid, request.source_pool, v, request.dest_pool,
+                    verify=request.verify,
+                    delete_source=request.delete_source,
+                    conflict_resolution=service_conflict,
+                    stop_containers_before=request.stop_containers_before,
+                    start_containers_after=request.start_containers_after,
+                )),
+            }
+            if skip_existing and dest_pool:
+                op["precheck"] = (lambda v=vol: "destination already exists"
+                                  if _volume_exists_in_pool(volume_service, dest_pool, v) else None)
+            operations.append(op)
+
+        label = f"Migrate {len(operations)} volume(s) → {request.dest_pool}"
+        task_id = get_bulk_service().enqueue("migrate", label, operations)
+        return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type="bulk_migrate")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Bulk migrate error: {e}", flush=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/api/bulk/delete", response_model=TaskResponse)
+async def bulk_delete(request: BulkDeleteRequest, session: dict = Depends(require_auth)):
+    """Delete multiple volumes/backups sequentially under one summary task."""
+    try:
+        if not request.confirm:
+            raise HTTPException(status_code=400, detail="Deletion must be confirmed")
+
+        config = get_config()
+        volume_service = get_volume_service(config)
+
+        operations = []
+        for vol in request.volumes:
+            operations.append({
+                "item": f"{request.pool}/{vol}",
+                "lock": (request.pool, vol),
+                "sub_type": "delete",
+                "sub_params": {"pool": request.pool, "volume_name": vol},
+                "run": (lambda stid, v=vol: volume_service.delete_volume(
+                    request.pool, v, task_id=stid,
+                    stop_containers_before=request.stop_containers_before,
+                )),
+            })
+
+        label = f"Delete {len(operations)} item(s) from {request.pool}"
+        task_id = get_bulk_service().enqueue("delete", label, operations)
+        return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type="bulk_delete")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Bulk delete error: {e}", flush=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/api/bulk/permissions", response_model=TaskResponse)
+async def bulk_permissions(request: BulkPermissionsRequest, session: dict = Depends(require_auth)):
+    """Apply the same chmod/chown to multiple volumes under one summary task."""
+    try:
+        config = get_config()
+        volume_service = get_volume_service(config)
+        owner_spec = f"{request.owner}:{request.group}" if request.owner is not None else None
+
+        operations = []
+        for vol in request.volumes:
+            operations.append({
+                "item": f"{request.pool}/{vol}",
+                "lock": (request.pool, vol),
+                "sub_type": "permissions",
+                "sub_params": {
+                    "pool": request.pool,
+                    "volume_name": vol,
+                    "mode": request.mode,
+                    "owner": owner_spec,
+                },
+                "run": (lambda stid, v=vol: volume_service.change_permissions(
+                    request.pool, v, request.mode, owner_spec, task_id=stid,
+                    stop_containers_before=request.stop_containers_before,
+                    start_containers_after=request.start_containers_after,
+                )),
+            })
+
+        label = f"Permissions on {len(operations)} volume(s) in {request.pool}"
+        task_id = get_bulk_service().enqueue("permissions", label, operations)
+        return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type="bulk_permissions")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Bulk permissions error: {e}", flush=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/api/bulk/restore", response_model=TaskResponse)
+async def bulk_restore(request: BulkRestoreRequest, session: dict = Depends(require_auth)):
+    """Restore multiple backup archives sequentially under one summary task."""
+    try:
+        config = get_config()
+        volume_service = get_volume_service(config)
+        backup_service = get_backup_service(config, volume_service)
+
+        dest_pool = volume_service.get_pool_by_name(request.dest_pool)
+        service_conflict = _bulk_conflict_for_service(request.conflict_resolution)
+        skip_existing = request.conflict_resolution == "skip"
+
+        operations = []
+        for backup_file in request.backup_files:
+            dest_vol = _derive_restore_volume(backup_file)
+            # Guard the derived name; an underivable name skips rather than crashes.
+            try:
+                dest_vol = validate_name(dest_vol, "dest_volume")
+                name_error = None
+            except ValueError as ve:
+                name_error = str(ve)
+
+            op = {
+                "item": backup_file,
+                "lock": (request.dest_pool, dest_vol),
+                "sub_type": "restore",
+                "sub_params": {
+                    "backup_pool": request.backup_pool,
+                    "backup_file": backup_file,
+                    "dest_pool": request.dest_pool,
+                    "dest_volume_name": dest_vol,
+                },
+                "run": (lambda stid, f=backup_file, dv=dest_vol: backup_service.restore_backup(
+                    stid, request.backup_pool, f, request.dest_pool, dv,
+                    conflict_resolution=service_conflict,
+                )),
+            }
+            if name_error:
+                op["precheck"] = (lambda err=name_error: f"could not derive a valid volume name ({err})")
+            elif skip_existing and dest_pool:
+                op["precheck"] = (lambda dv=dest_vol: "destination already exists"
+                                  if _volume_exists_in_pool(volume_service, dest_pool, dv) else None)
+            operations.append(op)
+
+        label = f"Restore {len(operations)} backup(s) → {request.dest_pool}"
+        task_id = get_bulk_service().enqueue("restore", label, operations)
+        return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type="bulk_restore")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Bulk restore error: {e}", flush=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 

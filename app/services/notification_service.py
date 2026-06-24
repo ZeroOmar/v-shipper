@@ -52,6 +52,11 @@ _TASK_TYPE_LABELS: Dict[str, str] = {
     "rename": "Rename",
     "create": "Create Volume",
     "permissions": "Permissions",
+    "bulk_backup": "Bulk Backup",
+    "bulk_migrate": "Bulk Migration",
+    "bulk_restore": "Bulk Restore",
+    "bulk_delete": "Bulk Delete",
+    "bulk_permissions": "Bulk Permissions",
 }
 
 _PARAM_LABELS: Dict[str, str] = {
@@ -78,10 +83,12 @@ _PARAM_LABELS: Dict[str, str] = {
     "total_volumes":     "Total Volumes",
     "completed_volumes": "Completed",
     "failed_volumes":    "Failed",
+    "total_items":       "Total Items",
 }
 
 # Params that are internal implementation details, not meaningful to the user.
-_HIDDEN_PARAMS = {"scheduled", "conflict_resolution", "rename_dest"}
+_HIDDEN_PARAMS = {"scheduled", "conflict_resolution", "rename_dest",
+                  "bulk", "parent_task_id", "action", "label", "items"}
 
 
 class NotificationService:
@@ -170,16 +177,22 @@ class NotificationService:
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
+    _ITEM_TOPICS = ("backup", "migrate", "restore", "delete", "rename", "create", "permissions")
+
     def _task_to_topic(self, task: dict) -> Optional[str]:
+        params = task.get("params", {}) or {}
+        # Sub-tasks of a scheduled run or a bulk action are reported by their
+        # summary task, not individually.
+        if params.get("scheduled") or params.get("parent_task_id"):
+            return None
         t = (task.get("type") or task.get("task_type") or "").lower()
-        if t == "backup":
-            # Suppress scheduled sub-tasks — the summary task handles those
-            if task.get("params", {}).get("scheduled"):
-                return None
-            return "backup"
         if t == "scheduled_backup":
             return "schedule"
-        if t in ("migrate", "restore", "delete", "rename", "create", "permissions"):
+        if t.startswith("bulk_"):
+            # A bulk action notifies its base topic (bulk_backup → "backup", …).
+            base = t[len("bulk_"):]
+            return base if base in self._ITEM_TOPICS else None
+        if t in self._ITEM_TOPICS:
             return t
         return None
 
@@ -189,6 +202,8 @@ class NotificationService:
             job = params.get("job_name") or params.get("parent_job") or ""
             pool = params.get("backup_pool") or ""
             return f"{job} → {pool}" if job else pool or "—"
+        if task_type.startswith("bulk_"):
+            return params.get("label") or f"{params.get('total_items', 0)} item(s)"
         if task_type in ("delete", "create"):
             pool = params.get("pool") or params.get("source_pool") or ""
             vol = params.get("volume_name") or params.get("source_volume") or "—"

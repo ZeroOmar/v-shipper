@@ -2,6 +2,24 @@
 
 All notable changes to v-shipper are documented in this file.
 
+## 0.8.0
+
+v-shipper and v-helper now version **independently** — this release ends the shared version line used through `0.7.0`.
+
+### Added
+
+- **Bulk actions** — volume and backup lists now have a checkbox on every row. Selecting one or more reveals a toolbar (with "Select all" / "Clear") offering the same actions as the single-item views, minus rename: Backup, Migrate, Delete, and Permissions for volumes; Restore and Delete for backups. Each bulk dialog mirrors its single-item dialog, with the "Source Volume" / "Volume" / "Backup File" field shown as the list of selected items. New `/api/bulk/{backup,migrate,delete,permissions,restore}` endpoints back the feature. A bulk action runs exactly like a scheduled backup: every item runs sequentially under one summary task, the per-item sub-tasks are grouped in the summary's detail view, and a single completion notification covers the whole batch. Bulk migrate/restore offer a "skip / overwrite / merge" choice for destinations that already exist; bulk restore derives each destination volume name from its archive filename.
+
+### Changed
+
+- **Version checks no longer compare v-shipper against v-helper** — instead, the UI checks each component against its own latest GitHub release. v-shipper flags itself "out of date" when a newer v-shipper tag exists, and flags a connected v-helper when a newer v-helper tag exists, looking the two repositories' tags up independently. This replaces the old model where the two shared a version line and were compared against each other.
+- **Tasks now run strictly one at a time** — the task queue gained a real single-worker FIFO. Previously every triggered operation spawned its own thread and ran immediately, so a task started while another was running could overlap it. Now a task triggered while another runs waits in the list as "pending" until its turn. Manual operations, scheduled backups, and bulk actions all flow through the same queue.
+- **Backup archives are written world-accessible (`0o777`)** on the backup pool, so a backup can be read or managed regardless of the user that owns the pool. For remote backup pools the mode is applied to the staging copy and carried to the remote by `rsync -a`.
+
+### Fixed
+
+- **Toasts appeared behind a dialog or the settings overlay** — the toast container shared a `z-index` with the settings overlay, so its blur painted over notifications. The toast container now sits above both modals and the settings overlay.
+
 ## 0.7.0
 
 Coordinated release with v-helper `0.7.0` (shared version line). No functional change to v-helper this release; the bump keeps the two version lines aligned so connected helpers are not flagged "out of date".

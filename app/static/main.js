@@ -13,7 +13,12 @@ let taskHistory = []; // Keep track of recent tasks
 let taskPage = 0; // Current task list page (100 per page)
 let consecutiveLoadFailures = 0; // Track network failures
 let appVersion = null; // v-shipper's own version, fetched once from /api/health
+let latestShipperVersion = null; // highest v-shipper tag on GitHub (null until checked)
+let latestHelperVersion = null;  // highest v-helper tag on GitHub (null until checked)
+let versionCheckInterval = null; // periodic GitHub latest-version poll
 let containerUsageCache = {}; // pool -> { volume: [{name, status}] }, from /api/containers
+let bulkSelection = new Set();   // names of volumes/backups selected for a bulk action
+let bulkSelectionPool = null;    // pool the current selection belongs to (reset on pool change)
 
 // Configuration
 const POLL_INTERVAL = 2000; // 2 seconds
@@ -25,6 +30,13 @@ const TASKS_PER_PAGE = 100;
 const VOLUME_NAME_PATTERN = '[A-Za-z0-9][A-Za-z0-9_.-]{0,254}';
 const VOLUME_NAME_TITLE = 'Letters, digits, "_", ".", "-"; must start with a letter or digit; no spaces or slashes.';
 const MAX_LOAD_FAILURES = 3; // Logout after 3 consecutive failures
+
+// GitHub tag-list endpoints for the two components. The browser fetches these
+// directly (GitHub's API sends permissive CORS headers for public repos) to
+// learn each component's latest released version, independently of the other.
+const SHIPPER_TAGS_URL = 'https://api.github.com/repos/ZeroOmar/v-shipper/tags';
+const HELPER_TAGS_URL = 'https://api.github.com/repos/ZeroOmar/v-helper/tags';
+const VERSION_CHECK_INTERVAL = 6 * 60 * 60 * 1000; // re-check GitHub every 6 hours
 
 // ============ Utilities ============
 
@@ -128,6 +140,9 @@ function showDashboard() {
     document.getElementById('dashboard').classList.add('active');
     document.getElementById('currentUser').textContent = currentUser || 'admin';
     loadAppVersion();
+    checkLatestVersions();
+    if (versionCheckInterval) clearInterval(versionCheckInterval);
+    versionCheckInterval = setInterval(checkLatestVersions, VERSION_CHECK_INTERVAL);
     loadTaskHistory();
     loadPools();
     startAutoRefresh();
@@ -147,14 +162,60 @@ function compareVersions(a, b) {
     return 0;
 }
 
-// Fetch v-shipper's own version once, then re-render pools so version pills appear.
+// Fetch v-shipper's own running version once from /api/health.
 async function loadAppVersion() {
     try {
         const res = await fetch(`${API_BASE}/health`);
         const d = await res.json();
         appVersion = d.version || null;
-    } catch (_) { /* leave appVersion null; pills simply won't render */ }
+    } catch (_) { /* leave appVersion null; the update pill simply won't render */ }
+    updateShipperUpdatePill();
+}
+
+// Fetch a repo's tag list and return the highest semver tag as a dotted string
+// ("x.y.z"), or null on any failure. Best-effort: a network error, GitHub rate
+// limit, or empty list just means no update pill is shown.
+async function fetchLatestTag(url) {
+    try {
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const tags = await res.json();
+        let latest = null;
+        for (const t of tags) {
+            const name = String((t && t.name) || '').replace(/^v/i, '');
+            if (!/^\d+(\.\d+)*$/.test(name)) continue; // skip non-version tags
+            if (!latest || compareVersions(name, latest) > 0) latest = name;
+        }
+        return latest;
+    } catch (_) {
+        return null;
+    }
+}
+
+// Check GitHub for the latest v-shipper and v-helper releases, then refresh the
+// update indicators. Each component is compared against its own latest release —
+// the two version lines are independent.
+async function checkLatestVersions() {
+    const [shipper, helper] = await Promise.all([
+        fetchLatestTag(SHIPPER_TAGS_URL),
+        fetchLatestTag(HELPER_TAGS_URL),
+    ]);
+    if (shipper) latestShipperVersion = shipper;
+    if (helper) latestHelperVersion = helper;
+    updateShipperUpdatePill();
     if (Object.keys(poolsCache).length) displayPools(Object.values(poolsCache));
+}
+
+// Header pill flags v-shipper itself when a newer release exists on GitHub.
+function updateShipperUpdatePill() {
+    const hdrPill = document.getElementById('shipperUpdatePill');
+    if (!hdrPill) return;
+    const behind = appVersion && latestShipperVersion
+        && compareVersions(appVersion, latestShipperVersion) < 0;
+    hdrPill.style.display = behind ? '' : 'none';
+    if (behind) {
+        hdrPill.title = `v-shipper ${appVersion} is behind the latest release ${latestShipperVersion} — update v-shipper`;
+    }
 }
 
 function startAutoRefresh() {
@@ -222,8 +283,6 @@ function displayPools(pools) {
     const container = document.getElementById('poolsList');
     container.innerHTML = '';
 
-    let shipperBehind = false; // true if any connected v-helper is newer than v-shipper
-
     pools.forEach(pool => {
         const poolEl = document.createElement('div');
         poolEl.className = 'pool-item';
@@ -254,22 +313,19 @@ function displayPools(pools) {
         const helperBadgeHtml = hasHelper
             ? `<span class="pool-helper-badge">v-helper</span>` : '';
 
-        // Version comparison: a connected v-helper older than v-shipper gets an
-        // "out of date" pill on its card; a newer one flags v-shipper itself
-        // (handled after the loop via the header pill). A reachable helper with
-        // no reported version predates the /version endpoint, so it is older.
+        // A connected v-helper behind the latest v-helper release on GitHub gets
+        // an "out of date" pill on its card. A reachable helper that reports no
+        // version predates the /version endpoint, so it is treated as outdated.
         let helperOutdated = false;
-        if (hasHelper && appVersion) {
+        if (hasHelper && latestHelperVersion) {
             if (!pool.helper_version) {
                 helperOutdated = true;
-            } else {
-                const cmp = compareVersions(pool.helper_version, appVersion);
-                if (cmp < 0) helperOutdated = true;
-                else if (cmp > 0) shipperBehind = true;
+            } else if (compareVersions(pool.helper_version, latestHelperVersion) < 0) {
+                helperOutdated = true;
             }
         }
         const updatePillHtml = helperOutdated
-            ? `<span class="pool-update-pill" title="v-helper ${escapeHtml(pool.helper_version || 'unknown')} is older than v-shipper ${escapeHtml(appVersion || '')} — update v-helper">out of date</span>`
+            ? `<span class="pool-update-pill" title="v-helper ${escapeHtml(pool.helper_version || 'unknown')} is behind the latest release ${escapeHtml(latestHelperVersion || '')} — update v-helper">out of date</span>`
             : '';
 
         poolEl.innerHTML = `
@@ -285,14 +341,6 @@ function displayPools(pools) {
         
         container.appendChild(poolEl);
     });
-
-    const hdrPill = document.getElementById('shipperUpdatePill');
-    if (hdrPill) {
-        hdrPill.style.display = shipperBehind ? '' : 'none';
-        if (shipperBehind) {
-            hdrPill.title = `A connected v-helper is newer than v-shipper ${appVersion || ''} — update v-shipper`;
-        }
-    }
 }
 
 function selectPool(poolName) {
@@ -354,10 +402,13 @@ function displayVolumes(poolName, volumes, warnings = []) {
         return;
     }
 
+    syncBulkSelection(poolName, volumes.map(v => v.name));
+
     let html = `<div class="volumes-header">
         <h2>${escapeHtml(poolName)}</h2>
         ${isLocalDocker ? `<button class="btn tonal" data-action="open-create-volume" data-pool="${escapeHtml(poolName)}">+ New Volume</button>` : ''}
-    </div>`;
+    </div>
+    <div id="bulkToolbar" class="bulk-toolbar"></div>`;
     if (warnings.length > 0) {
         html += `<div class="warning-banner">${warnings.map(w => `<div>${escapeHtml(w)}</div>`).join('')}</div>`;
     }
@@ -366,6 +417,7 @@ function displayVolumes(poolName, volumes, warnings = []) {
         html += '<div class="placeholder"><p>No volumes found in this pool</p></div>';
     } else {
         volumes.forEach(volume => {
+            const selected = bulkSelection.has(volume.name);
             const sizeText = volume.size_loading
                 ? `<span class="loading-spinner" style="width: 14px; height: 14px; border-width: 2px;"></span> Calculating...`
                 : formatVolumeSize(volume.size_bytes, volume.size_gb);
@@ -375,7 +427,8 @@ function displayVolumes(poolName, volumes, warnings = []) {
 
             const volAttrs = `data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(volume.name)}"`;
             html += `
-                <div class="volume-item">
+                <div class="volume-item${selected ? ' bulk-selected' : ''}">
+                    <input type="checkbox" class="bulk-check" data-vol="${escapeHtml(volume.name)}" aria-label="Select ${escapeHtml(volume.name)}"${selected ? ' checked' : ''}>
                     <div class="volume-info">
                         <div class="volume-name">${escapeHtml(volume.name)}</div>
                         <div class="volume-details">
@@ -396,6 +449,7 @@ function displayVolumes(poolName, volumes, warnings = []) {
     }
 
     container.innerHTML = html;
+    updateBulkToolbar();
 
     if (poolMeta.docker_socket && volumes.length) loadVolumeContainers(poolName);
 }
@@ -478,13 +532,16 @@ function parseBackupFilename(filename) {
 
 function displayBackupPool(poolName, archives, warnings = []) {
     const container = document.getElementById('volumesContainer');
-    let html = `<div class="volumes-header"><h2>${poolName}</h2></div>`;
+    syncBulkSelection(poolName, archives.map(a => a.name));
+    let html = `<div class="volumes-header"><h2>${escapeHtml(poolName)}</h2></div>
+    <div id="bulkToolbar" class="bulk-toolbar"></div>`;
     if (warnings.length > 0) {
-        html += `<div class="warning-banner">${warnings.map(w => `<div>${w}</div>`).join('')}</div>`;
+        html += `<div class="warning-banner">${warnings.map(w => `<div>${escapeHtml(w)}</div>`).join('')}</div>`;
     }
     if (archives.length === 0) {
         html += '<div class="placeholder"><p>No backups in this pool</p></div>';
         container.innerHTML = html;
+        updateBulkToolbar();
         return;
     }
 
@@ -533,12 +590,15 @@ function displayBackupPool(poolName, archives, warnings = []) {
     }
 
     container.innerHTML = html;
+    updateBulkToolbar();
 }
 
 function renderBackupItem(poolName, archive, dateLabel) {
     const size = formatVolumeSize(archive.size_bytes, archive.size_gb);
     const meta = dateLabel ? `${dateLabel} · ${size}` : size;
-    return `<div class="backup-item">
+    const selected = bulkSelection.has(archive.name);
+    return `<div class="backup-item${selected ? ' bulk-selected' : ''}">
+        <input type="checkbox" class="bulk-check" data-file="${escapeHtml(archive.name)}" aria-label="Select ${escapeHtml(archive.name)}"${selected ? ' checked' : ''}>
         <div class="backup-item-info">
             <div class="backup-item-name">${escapeHtml(archive.name)}</div>
             <div class="backup-item-meta">${meta}</div>
@@ -548,6 +608,280 @@ function renderBackupItem(poolName, archive, dateLabel) {
             <button class="btn danger vol-btn" title="Delete" aria-label="Delete" data-action="open-delete" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(archive.name)}">🗑️</button>
         </div>
     </div>`;
+}
+
+// ── Bulk actions ───────────────────────────────────────────────────────────────
+// Checkboxes on each volume/backup row feed a selection set; when non-empty a
+// toolbar of bulk actions appears above the list. Each bulk action reuses the
+// matching single-item modal (with the item field shown as a list) and posts to
+// /api/bulk/*, which runs the items sequentially under one summary task.
+
+// Keep the selection tied to the pool being viewed: reset it when the pool
+// changes, and drop any names that no longer exist after a refresh.
+function syncBulkSelection(poolName, availableNames) {
+    if (bulkSelectionPool !== poolName) {
+        bulkSelection.clear();
+        bulkSelectionPool = poolName;
+    }
+    const avail = new Set(availableNames);
+    [...bulkSelection].forEach(n => { if (!avail.has(n)) bulkSelection.delete(n); });
+}
+
+function clearBulkSelection() {
+    bulkSelection.clear();
+    document.querySelectorAll('.bulk-check').forEach(cb => { cb.checked = false; });
+    document.querySelectorAll('.bulk-selected').forEach(r => r.classList.remove('bulk-selected'));
+    updateBulkToolbar();
+}
+
+// Render the action toolbar based on the current selection and pool type.
+function updateBulkToolbar() {
+    const bar = document.getElementById('bulkToolbar');
+    if (!bar) return;
+    const count = bulkSelection.size;
+    if (count === 0) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+
+    const poolMeta = poolsCache[activePool] || {};
+    const isBackupView = poolMeta.role === 'backup';
+    const isLocalDocker = poolMeta.role !== 'backup' && (poolMeta.pool_type !== 'remote' || poolMeta.has_helper);
+
+    const btns = isBackupView
+        ? `<button class="btn vol-btn" data-action="bulk-open-restore">📥 Restore</button>
+           <button class="btn danger vol-btn" data-action="bulk-open-delete">🗑️ Delete</button>`
+        : `<button class="btn vol-btn" data-action="bulk-open-backup">💾 Backup</button>
+           <button class="btn vol-btn" data-action="bulk-open-migrate">🚚 Migrate</button>
+           ${isLocalDocker ? `<button class="btn tonal vol-btn" data-action="bulk-open-permissions">🔑 Permissions</button>` : ''}
+           <button class="btn danger vol-btn" data-action="bulk-open-delete">🗑️ Delete</button>`;
+
+    bar.style.display = '';
+    bar.innerHTML = `
+        <span class="bulk-toolbar-count">${count} selected</span>
+        <div class="bulk-toolbar-actions">${btns}</div>
+        <div class="bulk-toolbar-right">
+            <button class="btn tonal" data-action="bulk-select-all">Select all</button>
+            <button class="btn tonal" data-action="bulk-clear">Clear</button>
+        </div>`;
+}
+
+// Select every item currently rendered in the list (volumes or backups).
+function selectAllBulk() {
+    document.querySelectorAll('.bulk-check').forEach(cb => {
+        const name = cb.dataset.vol || cb.dataset.file;
+        if (name) bulkSelection.add(name);
+        cb.checked = true;
+        const row = cb.closest('.volume-item, .backup-item');
+        if (row) row.classList.add('bulk-selected');
+    });
+    updateBulkToolbar();
+}
+
+// Toggle selection when a row checkbox changes (delegated so it survives re-renders).
+document.addEventListener('change', (e) => {
+    const cb = e.target.closest('.bulk-check');
+    if (!cb) return;
+    const name = cb.dataset.vol || cb.dataset.file;
+    if (!name) return;
+    if (cb.checked) bulkSelection.add(name); else bulkSelection.delete(name);
+    const row = cb.closest('.volume-item, .backup-item');
+    if (row) row.classList.toggle('bulk-selected', cb.checked);
+    updateBulkToolbar();
+});
+
+// Scrollable read-only list of the selected items, shown in place of the single
+// "Source Volume" / "Volume" / "Backup File" field.
+function bulkItemsListHtml(label) {
+    const items = [...bulkSelection].sort();
+    return `<div class="form-group">
+        <label>${label} (${items.length})</label>
+        <div class="bulk-items-list">${items.map(n => `<div class="bulk-items-row">${escapeHtml(n)}</div>`).join('')}</div>
+    </div>`;
+}
+
+// Generic stop/start-container checkboxes for bulk modals. Uses the same ids the
+// single modals do so readContainerControl() picks them up.
+function bulkContainerControlHtml({ start } = {}) {
+    const startRow = start ? `
+        <div class="form-group">
+            <label class="checkbox-label"><input type="checkbox" id="ccStartAfter"><span>Start container(s) after</span></label>
+        </div>` : '';
+    return `
+        <div class="form-group">
+            <label class="checkbox-label"><input type="checkbox" id="ccStopBefore"><span>Stop container(s) before each operation</span></label>
+        </div>${startRow}`;
+}
+
+async function _submitBulk(endpoint, body, modalId) {
+    try {
+        const res = await fetch(`${API_BASE}/${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            closeModal(modalId);
+            clearBulkSelection();
+            if (activePool) loadVolumesForPool(activePool);
+            showTaskProgress(data.task_id);
+        } else {
+            showError(typeof data.detail === 'string' ? data.detail : 'Bulk action failed');
+        }
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+    }
+}
+
+function openBulkBackupModal() {
+    if (!bulkSelection.size) return;
+    const pool = activePool;
+    document.getElementById('backupModal').querySelector('.modal-content').innerHTML = `
+        <div class="modal-header"><h3>Bulk Backup</h3><button class="close-btn" onclick="closeModal('backupModal')">×</button></div>
+        <div class="form-group"><label>Source Pool</label><input type="text" value="${escapeHtml(pool)}" disabled></div>
+        ${bulkItemsListHtml('Source Volumes')}
+        <div class="form-group"><label>Backup Pool</label><select id="bulkBackupPool"><option value="">-- Select backup pool --</option></select></div>
+        <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="bulkBackupVerify" checked><span>Verify backup</span></label></div>
+        ${bulkContainerControlHtml({ start: true })}
+        <button class="btn success" style="width:100%;" data-action="start-bulk-backup">Start Bulk Backup</button>`;
+    loadBackupPoolsForSelect('bulkBackupPool');
+    openModal('backupModal');
+}
+
+function startBulkBackup() {
+    const backupPool = document.getElementById('bulkBackupPool').value;
+    if (!backupPool) { showError('Please select a backup pool'); return; }
+    _submitBulk('bulk/backup', {
+        source_pool: activePool,
+        source_volumes: [...bulkSelection],
+        backup_pool: backupPool,
+        verify: document.getElementById('bulkBackupVerify').checked,
+        ...readContainerControl(),
+    }, 'backupModal');
+}
+
+function openBulkMigrateModal() {
+    if (!bulkSelection.size) return;
+    const pool = activePool;
+    document.getElementById('migrateModal').querySelector('.modal-content').innerHTML = `
+        <div class="modal-header"><h3>Bulk Migrate</h3><button class="close-btn" onclick="closeModal('migrateModal')">×</button></div>
+        <div class="form-group"><label>Source Pool</label><input type="text" value="${escapeHtml(pool)}" disabled></div>
+        ${bulkItemsListHtml('Source Volumes')}
+        <div class="form-group"><label>Destination Pool</label><select id="bulkDestPool"><option value="">-- Select pool --</option></select></div>
+        <div class="form-group"><label>If destination exists</label><select id="bulkMigrateConflict">
+            <option value="skip">Skip that volume</option>
+            <option value="overwrite">Overwrite</option>
+        </select></div>
+        <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="bulkMigrateVerify" checked><span>Verify migration</span></label></div>
+        <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="bulkMigrateDelete"><span>Delete source after verification</span></label></div>
+        ${bulkContainerControlHtml({ start: true })}
+        <button class="btn success" style="width:100%;" data-action="start-bulk-migrate">Start Bulk Migration</button>`;
+    loadPoolsForSelect('bulkDestPool');
+    openModal('migrateModal');
+}
+
+function startBulkMigrate() {
+    const destPool = document.getElementById('bulkDestPool').value;
+    if (!destPool) { showError('Please select a destination pool'); return; }
+    _submitBulk('bulk/migrate', {
+        source_pool: activePool,
+        source_volumes: [...bulkSelection],
+        dest_pool: destPool,
+        verify: document.getElementById('bulkMigrateVerify').checked,
+        delete_source: document.getElementById('bulkMigrateDelete').checked,
+        conflict_resolution: document.getElementById('bulkMigrateConflict').value,
+        ...readContainerControl(),
+    }, 'migrateModal');
+}
+
+function openBulkPermissionsModal() {
+    if (!bulkSelection.size) return;
+    const pool = activePool;
+    document.getElementById('migrateModal').querySelector('.modal-content').innerHTML = `
+        <div class="modal-header"><h3>Bulk Permissions</h3><button class="close-btn" onclick="closeModal('migrateModal')">×</button></div>
+        <div class="form-group"><label>Pool</label><input type="text" value="${escapeHtml(pool)}" disabled></div>
+        ${bulkItemsListHtml('Volumes')}
+        <p class="settings-section-desc">The same chmod/chown is applied recursively to every selected volume. Leave a field blank to skip it.</p>
+        <div class="form-group"><label>User / UID</label><input type="text" id="bulkPermUser" maxlength="32" placeholder="(unchanged)"></div>
+        <div class="form-group"><label>Group / GID</label><input type="text" id="bulkPermGroup" maxlength="32" placeholder="(unchanged)"></div>
+        <div class="form-group"><label>Permission (octal)</label><input type="text" id="bulkPermMode" maxlength="4" pattern="[0-7]{3,4}" title="Octal mode, e.g. 755" placeholder="(unchanged)"></div>
+        ${bulkContainerControlHtml({ start: true })}
+        <button class="btn success" style="width:100%;" data-action="start-bulk-permissions">Apply to ${bulkSelection.size} volume(s)</button>`;
+    openModal('migrateModal');
+}
+
+function startBulkPermissions() {
+    const user = document.getElementById('bulkPermUser').value.trim();
+    const group = document.getElementById('bulkPermGroup').value.trim();
+    const mode = document.getElementById('bulkPermMode').value.trim();
+    if ((user || group) && (!user || !group)) {
+        showError('User and Group are both required for an ownership change');
+        return;
+    }
+    if (!mode && !user) { showError('Enter a mode and/or an owner/group to apply'); return; }
+    const body = {
+        pool: activePool,
+        volumes: [...bulkSelection],
+        ...readContainerControl(),
+    };
+    if (mode) body.mode = mode;
+    if (user) { body.owner = user; body.group = group; }
+    _submitBulk('bulk/permissions', body, 'migrateModal');
+}
+
+function openBulkDeleteModal() {
+    if (!bulkSelection.size) return;
+    const pool = activePool;
+    document.getElementById('deleteModal').querySelector('.modal-content').innerHTML = `
+        <div class="modal-header"><h3>Bulk Delete</h3><button class="close-btn" onclick="closeModal('deleteModal')">×</button></div>
+        <p><strong>Warning:</strong> This permanently deletes every selected item. This cannot be undone.</p>
+        <div class="form-group"><label>Pool</label><input type="text" value="${escapeHtml(pool)}" disabled></div>
+        ${bulkItemsListHtml('Items')}
+        <label class="checkbox-label"><input type="checkbox" id="bulkDeleteConfirm"><span>Yes, delete the ${bulkSelection.size} selected item(s)</span></label>
+        ${bulkContainerControlHtml({ start: false })}
+        <button class="btn danger" style="width:100%; margin-top:15px;" data-action="confirm-bulk-delete">Delete</button>`;
+    openModal('deleteModal');
+}
+
+function confirmBulkDelete() {
+    if (!document.getElementById('bulkDeleteConfirm').checked) {
+        showError('Please confirm deletion');
+        return;
+    }
+    _submitBulk('bulk/delete', {
+        pool: activePool,
+        volumes: [...bulkSelection],
+        confirm: true,
+        stop_containers_before: !!document.getElementById('ccStopBefore')?.checked,
+    }, 'deleteModal');
+}
+
+function openBulkRestoreModal() {
+    if (!bulkSelection.size) return;
+    const pool = activePool;
+    document.getElementById('backupModal').querySelector('.modal-content').innerHTML = `
+        <div class="modal-header"><h3>Bulk Restore</h3><button class="close-btn" onclick="closeModal('backupModal')">×</button></div>
+        <div class="form-group"><label>Backup Pool</label><input type="text" value="${escapeHtml(pool)}" disabled></div>
+        ${bulkItemsListHtml('Backup Files')}
+        <p class="settings-section-desc">Each backup restores to a volume named after its file (pool prefix and timestamp stripped).</p>
+        <div class="form-group"><label>Destination Pool</label><select id="bulkRestorePool"><option value="">-- Select destination pool --</option></select></div>
+        <div class="form-group"><label>If destination exists</label><select id="bulkRestoreConflict">
+            <option value="skip">Skip that backup</option>
+            <option value="overwrite">Overwrite</option>
+            <option value="merge">Merge into existing</option>
+        </select></div>
+        <button class="btn success" style="width:100%;" data-action="start-bulk-restore">Start Bulk Restore</button>`;
+    loadPoolsForSelect('bulkRestorePool');
+    openModal('backupModal');
+}
+
+function startBulkRestore() {
+    const destPool = document.getElementById('bulkRestorePool').value;
+    if (!destPool) { showError('Please select a destination pool'); return; }
+    _submitBulk('bulk/restore', {
+        backup_pool: activePool,
+        backup_files: [...bulkSelection],
+        dest_pool: destPool,
+        conflict_resolution: document.getElementById('bulkRestoreConflict').value,
+    }, 'backupModal');
 }
 
 // ── Create / Rename Volume ─────────────────────────────────────────────────────
@@ -1283,6 +1617,9 @@ function getTaskTargetLabel(task) {
         const pool = params.backup_pool || '';
         return `${name} — ${count} volume${count !== 1 ? 's' : ''}${pool ? ` → ${pool}` : ''}`;
     }
+    if (task.task_type && task.task_type.startsWith('bulk_')) {
+        return params.label || `Bulk ${task.task_type.slice(5)} — ${params.total_items || 0} item(s)`;
+    }
     if (task.task_type === 'delete') {
         const pool = params.pool || '';
         const vol = params.volume_name || params.source_volume || params.volume || '';
@@ -1328,9 +1665,9 @@ function getTaskTargetLabel(task) {
 function renderTaskHistory() {
     const progressPanel = document.getElementById('progressPanel');
 
-    // Per-volume backups spawned by a schedule are hidden here — they live inside
-    // their parent "Scheduled" task's detail view instead.
-    const visibleTasks = taskHistory.filter(task => !(task.params && task.params.scheduled));
+    // Sub-tasks spawned by a scheduled run or a bulk action are hidden here — they
+    // live inside their parent task's detail view instead.
+    const visibleTasks = taskHistory.filter(task => !(task.params && (task.params.scheduled || task.params.parent_task_id)));
 
     if (visibleTasks.length === 0) {
         progressPanel.innerHTML = '<div class="placeholder-text">No active tasks</div>';
@@ -1383,6 +1720,11 @@ function getTaskTypeDisplay(type) {
         delete: 'Delete',
         rename: 'Rename',
         create: 'Create',
+        bulk_backup: 'Bulk Backup',
+        bulk_migrate: 'Bulk Migrate',
+        bulk_delete: 'Bulk Delete',
+        bulk_permissions: 'Bulk Permissions',
+        bulk_restore: 'Bulk Restore',
     };
     return map[type] || (type ? type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Task');
 }
@@ -2370,10 +2712,13 @@ function _renderTaskDetail(task, logLines) {
         ? `<button class="btn tonal task-detail-back-btn" data-action="task-detail-back">← Back</button>`
         : '';
 
-    // For a "Scheduled" run, list the per-volume backups it spawned. Each is its
-    // own task and opens its own detail view (with a back link to here).
+    // For a "Scheduled" run or a bulk action, list the per-item sub-tasks it
+    // spawned. Each is its own task and opens its own detail view (with a back
+    // link to here).
     let subTaskSection = '';
-    if (task.task_type === 'scheduled_backup') {
+    const isGroupTask = task.task_type === 'scheduled_backup' || (task.task_type || '').startsWith('bulk_');
+    if (isGroupTask) {
+        const sectionTitle = task.task_type === 'scheduled_backup' ? 'Volume Backups' : 'Items';
         const subTasks = taskHistory.filter(t => t.params && t.params.parent_task_id === task.task_id);
         const subTaskHtml = subTasks.length
             ? subTasks.map(st => `
@@ -2384,10 +2729,10 @@ function _renderTaskDetail(task, logLines) {
                     </div>
                     <div class="subtask-meta">${st.progress_percent || 0}%${st.error ? ' · failed' : ''}</div>
                 </div>`).join('')
-            : '<div class="log-empty">No volume backups recorded for this run yet.</div>';
+            : '<div class="log-empty">No items recorded for this run yet.</div>';
         subTaskSection = `
             <div class="task-detail-section">
-                <div class="task-detail-section-title">Volume Backups (${subTasks.length})</div>
+                <div class="task-detail-section-title">${sectionTitle} (${subTasks.length})</div>
                 <div class="subtask-list">${subTaskHtml}</div>
             </div>`;
     }
@@ -2484,6 +2829,18 @@ const ACTION_HANDLERS = {
     'start-backup':        (d) => startBackup(d.pool, d.vol),
     'start-restore':       (d) => startRestore(d.pool, d.file),
     'confirm-delete':      (d) => confirmDelete(d.pool, d.vol),
+    'bulk-clear':          ()  => clearBulkSelection(),
+    'bulk-select-all':     ()  => selectAllBulk(),
+    'bulk-open-backup':    ()  => openBulkBackupModal(),
+    'bulk-open-migrate':   ()  => openBulkMigrateModal(),
+    'bulk-open-permissions': () => openBulkPermissionsModal(),
+    'bulk-open-delete':    ()  => openBulkDeleteModal(),
+    'bulk-open-restore':   ()  => openBulkRestoreModal(),
+    'start-bulk-backup':   ()  => startBulkBackup(),
+    'start-bulk-migrate':  ()  => startBulkMigrate(),
+    'start-bulk-permissions': () => startBulkPermissions(),
+    'confirm-bulk-delete': ()  => confirmBulkDelete(),
+    'start-bulk-restore':  ()  => startBulkRestore(),
     'toggle-schedule':     (d) => toggleSchedule(d.id),
     'run-schedule':        (d) => runScheduleNow(d.id),
     'edit-schedule':       (d) => openScheduleForm(d.id),
