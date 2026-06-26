@@ -2,12 +2,17 @@ name: Release
 
 # When a version tag is pushed, publish a GitHub Release whose body is the
 # annotated tag's message. The release skill writes the curated changelog into
-# the tag message (`git tag -a <ver> -F notes`), so each release carries its own
-# notes — there is no central CHANGELOG.md to grow.
+# the tag message (`git tag -a <ver> --cleanup=verbatim -F notes`), so each
+# release carries its own notes — there is no central CHANGELOG.md to grow.
 
 on:
   push:
     tags: [ '*.*.*' ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)publish a release for'
+        required: true
 
 permissions:
   contents: write
@@ -19,26 +24,32 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # need the annotated tag object (and history) to read its message
+          fetch-depth: 0   # full history; tag object is re-fetched below
 
-      - name: Create GitHub Release from annotated tag
+      - name: Create or update GitHub Release from annotated tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists — nothing to do."
-            exit 0
-          fi
+          # actions/checkout fetches the commit and registers the tag as
+          # *lightweight*, which drops the annotation — so re-fetch the real tag
+          # object, otherwise %(contents) yields the commit message, not the notes.
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
 
-          # Annotated tags carry a message; lightweight tags fall back to the commit message.
           NOTES="$(git tag -l --format='%(contents)' "$TAG")"
 
-          if [ -n "$NOTES" ]; then
-            printf '%s\n' "$NOTES" | gh release create "$TAG" --title "$TAG" --verify-tag --notes-file -
+          if [ -z "$NOTES" ]; then
+            echo "Tag $TAG has no annotated message; falling back to auto-generated notes."
+            NOTES="$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="$TAG" --jq '.body' 2>/dev/null || echo "Release $TAG.")"
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            printf '%s\n' "$NOTES" | gh release edit "$TAG" --title "$TAG" --notes-file -
+            echo "Updated existing release $TAG."
           else
-            echo "Tag $TAG has no message; using auto-generated notes."
-            gh release create "$TAG" --title "$TAG" --verify-tag --generate-notes
+            printf '%s\n' "$NOTES" | gh release create "$TAG" --title "$TAG" --verify-tag --notes-file -
+            echo "Created release $TAG."
           fi
