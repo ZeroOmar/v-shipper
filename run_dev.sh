@@ -9,13 +9,13 @@ docker_hosts:
   - name: local2
     pool: /Users/zero/Files/Repos/_temp/test_volumes/host2
     pool_type: local
-  - name: remote1
-    pool: /
-    pool_type: remote
-    rsync_module: docker-volumes
-    remote_host: 10.0.13.116:873
-    api_host: 10.0.13.116:8888
-    api_key: 24e88cb9-efdc-44a9-b3b8-8d9107f380e9
+  # - name: remote1
+  #   pool: /
+  #   pool_type: remote
+  #   rsync_module: docker-volumes
+  #   remote_host: 10.0.13.116:873
+  #   api_host: 10.0.13.116:8888
+  #   api_key: 24e88cb9-efdc-44a9-b3b8-8d9107f380e9
 
 backup_pools:
   - name: backup

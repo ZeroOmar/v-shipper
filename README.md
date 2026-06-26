@@ -264,11 +264,12 @@ curl -X POST -b cookies.txt http://localhost/api/debug/cleanup
 
 ## Releasing
 
-The GitHub Actions workflow builds and pushes on semver tag:
+Pushing a semver tag triggers GitHub Actions to (1) build and push the image and (2) publish a GitHub Release. Use an **annotated** tag — its message becomes the release notes (there is no CHANGELOG.md; each release carries its own notes):
 ```bash
-git tag 0.8.0
-git push origin 0.8.0
-# → ghcr.io/zeroomar/v-shipper:0.8.0
+git tag -a 0.9.0 -F notes.md   # notes.md = curated release notes
+git push origin 0.9.0
+# → ghcr.io/zeroomar/v-shipper:0.9.0
+# → https://github.com/ZeroOmar/v-shipper/releases/tag/0.9.0
 ```
 
 ## Limitations

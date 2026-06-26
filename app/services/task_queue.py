@@ -157,12 +157,19 @@ class TaskQueue:
         print(f"[TASK:{task_id}] Started", flush=True)
     
     def complete_task(self, task_id: str, success: bool = True, error: Optional[str] = None):
-        """Mark task as completed."""
+        """Mark task as completed.
+
+        Idempotent: first finalize wins. A service that finalizes its own task
+        (backup/migrate/restore) keeps its detailed error/success even when a
+        caller (e.g. bulk_service) also calls complete_task afterwards.
+        """
         if task_id not in self.tasks:
             return
 
         with self.lock:
             task = self.tasks[task_id]
+            if task["status"] in ("completed", "failed"):
+                return  # already finalized — don't re-stamp or fire a second notification
             task["status"] = "completed" if success else "failed"
             task["completed_at"] = time.time()
 

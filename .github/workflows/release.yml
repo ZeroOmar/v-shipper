@@ -1,0 +1,44 @@
+name: Release
+
+# When a version tag is pushed, publish a GitHub Release whose body is the
+# annotated tag's message. The release skill writes the curated changelog into
+# the tag message (`git tag -a <ver> -F notes`), so each release carries its own
+# notes — there is no central CHANGELOG.md to grow.
+
+on:
+  push:
+    tags: [ '*.*.*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need the annotated tag object (and history) to read its message
+
+      - name: Create GitHub Release from annotated tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — nothing to do."
+            exit 0
+          fi
+
+          # Annotated tags carry a message; lightweight tags fall back to the commit message.
+          NOTES="$(git tag -l --format='%(contents)' "$TAG")"
+
+          if [ -n "$NOTES" ]; then
+            printf '%s\n' "$NOTES" | gh release create "$TAG" --title "$TAG" --verify-tag --notes-file -
+          else
+            echo "Tag $TAG has no message; using auto-generated notes."
+            gh release create "$TAG" --title "$TAG" --verify-tag --generate-notes
+          fi

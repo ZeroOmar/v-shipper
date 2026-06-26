@@ -73,19 +73,30 @@ class BulkService:
             sub_task_id = self.task_queue.add_task(
                 op["sub_type"], bulk=True, parent_task_id=summary_task_id, **op["sub_params"]
             )
+            # Drive the sub-task lifecycle here so every sub-type ends up finalized.
+            # Some services self-finalize (backup/migrate/restore); complete_task is
+            # idempotent, so for those our finalize is a no-op and their detailed
+            # error wins. Others (delete/permissions) only return a bool — those rely
+            # on us to mark them running/completed.
+            self.task_queue.start_task(sub_task_id)
+            err = None
             try:
                 ok = bool(op["run"](sub_task_id))
             except Exception as e:
                 print(f"[TASK:{summary_task_id}] ✗ {item}: {e}", flush=True)
                 ok = False
+                err = str(e)
 
             if ok:
                 results[item] = "ok"
             else:
                 results[item] = "failed"
                 sub = self.task_queue.get_task(sub_task_id)
-                reason = (sub or {}).get("error") or "operation returned failure"
+                reason = (sub or {}).get("error") or err or "operation returned failure"
+                err = reason
                 print(f"[TASK:{summary_task_id}] ✗ {item}: {reason}", flush=True)
+
+            self.task_queue.complete_task(sub_task_id, success=ok, error=err)
 
             self.task_queue.update_progress(summary_task_id, {
                 "progress_percent": min(99, int((i + 1) * 100 / n)) if n else 100,
