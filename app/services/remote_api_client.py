@@ -123,9 +123,12 @@ class RemoteApiClient:
             return {}
 
     def stop_container(self, name: str, timeout: int = 120) -> None:
-        """Stop a container by name. The HTTP wait outlives the docker grace period
-        (timeout + headroom) so a slow-but-successful stop isn't read as a failure."""
-        self._request("POST", "/docker/container/stop", {"name": name}, timeout=timeout + 30)
+        """Stop a container by name, applying *timeout* as the docker stop grace
+        period on the remote (v-helper) so it matches local behaviour. The HTTP
+        wait outlives that grace (timeout + headroom) so a slow-but-successful
+        stop isn't read as a failure."""
+        self._request("POST", "/docker/container/stop",
+                      {"name": name, "timeout": timeout}, timeout=timeout + 30)
 
     def start_container(self, name: str) -> None:
         """Start a container by name."""
