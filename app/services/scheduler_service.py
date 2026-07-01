@@ -1,22 +1,45 @@
 """Backup scheduling service — APScheduler-backed cron jobs with retention."""
 
 import json
+import os
 import subprocess
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 from app.config import get_config
-from app.validation import validate_backup_file
+from app.validation import make_cron_trigger, validate_backup_file
+
+
+def _resolve_timezone():
+    """Resolve the timezone cron schedules should run in.
+
+    Honours the container's `TZ` env var first (the standard way a Docker
+    container's timezone is set), then falls back to the host's local zone,
+    and finally UTC. Returns a pytz timezone (APScheduler 3.x expects pytz)."""
+    name = os.environ.get('TZ')
+    if not name:
+        try:
+            from tzlocal import get_localzone_name
+            name = get_localzone_name()
+        except Exception:
+            name = None
+    if name:
+        try:
+            return pytz.timezone(name)
+        except Exception:
+            print(f"[SCHEDULER] Unknown timezone {name!r}, falling back to UTC", flush=True)
+    return pytz.UTC
 
 
 class SchedulerService:
     def __init__(self, tmp_dir: str, config_dir: str, backup_service, task_queue):
-        self._scheduler = BackgroundScheduler(timezone='UTC')
+        self._tz = _resolve_timezone()
+        self._scheduler = BackgroundScheduler(timezone=self._tz)
         Path(config_dir).mkdir(parents=True, exist_ok=True)
         self._jobs_file = Path(config_dir) / 'vshipper_schedules.json'
         self.jobs: Dict[str, dict] = {}
@@ -25,7 +48,7 @@ class SchedulerService:
         self._load()
         self._scheduler.start()
         self._reschedule_all()
-        print("[SCHEDULER] Scheduler service started", flush=True)
+        print(f"[SCHEDULER] Scheduler service started (timezone={self._tz})", flush=True)
 
     # ── Persistence ──────────────────────────────────────────────────────────
 
@@ -53,7 +76,7 @@ class SchedulerService:
         try:
             self._scheduler.add_job(
                 self._enqueue_backup_job,
-                CronTrigger.from_crontab(job['cron'], timezone='UTC'),
+                make_cron_trigger(job['cron'], self._tz),
                 id=job_id,
                 replace_existing=True,
                 args=[job_id],

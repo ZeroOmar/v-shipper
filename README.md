@@ -115,10 +115,15 @@ docker run -d \
   --name v-shipper \
   -p 80:80 \
   -e VOLUME_MANAGER_CONFIG="$(cat config.yaml)" \
+  -e TZ=Europe/London \
   -v /var/lib/docker/volumes:/mnt/docker_volumes:ro \
   -v /mnt/backups:/mnt/backups:rw \
   ghcr.io/zeroomar/v-shipper:latest
 ```
+
+Set `TZ` to your local IANA timezone (e.g. `Europe/London`, `America/New_York`) so
+backup schedules fire at the wall-clock times you enter. If unset, the scheduler
+falls back to the host's local zone, then UTC.
 
 ## API
 
@@ -266,10 +271,10 @@ curl -X POST -b cookies.txt http://localhost/api/debug/cleanup
 
 Pushing a semver tag triggers GitHub Actions to (1) build and push the image and (2) publish a GitHub Release. Use an **annotated** tag — its message becomes the release notes (there is no CHANGELOG.md; each release carries its own notes):
 ```bash
-git tag -a 0.9.1 -F notes.md   # notes.md = curated release notes
-git push origin 0.9.1
-# → ghcr.io/zeroomar/v-shipper:0.9.1
-# → https://github.com/ZeroOmar/v-shipper/releases/tag/0.9.1
+git tag -a 0.9.2 -F notes.md   # notes.md = curated release notes
+git push origin 0.9.2
+# → ghcr.io/zeroomar/v-shipper:0.9.2
+# → https://github.com/ZeroOmar/v-shipper/releases/tag/0.9.2
 ```
 
 ## Limitations

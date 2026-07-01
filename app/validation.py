@@ -127,14 +127,52 @@ def safe_join(base, *parts: str) -> Path:
 
 # ── Cron ──────────────────────────────────────────────────────────────────────
 
+# crontab day-of-week numbering: 0 and 7 are Sunday, 1=Mon .. 6=Sat.
+_CRON_DOW_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+
+
+def _convert_cron_dow_field(field: str) -> str:
+    """Translate the day-of-week field from crontab numbering to APScheduler names.
+
+    APScheduler's CronTrigger uses 0=Monday for numeric weekdays, while standard
+    crontab uses 0/7=Sunday, 1=Monday. `CronTrigger.from_crontab` does NOT bridge
+    this, so numeric expressions like `1,3,5` (intended Mon/Wed/Fri) would wrongly
+    fire Tue/Thu/Sat. We map numeric weekdays to unambiguous names, preserving
+    ranges (`1-5`) and steps (`1-5/2`), and leaving names (`mon-fri`) untouched."""
+    import re
+    parts = []
+    for part in field.split(','):
+        rng, sep, step = part.partition('/')
+        rng = re.sub(r'\d+', lambda m: _CRON_DOW_NAMES[int(m.group(0)) % 7], rng)
+        parts.append(rng + sep + step)
+    return ','.join(parts)
+
+
+def make_cron_trigger(expr: str, timezone):
+    """Build an APScheduler CronTrigger from a 5-field crontab expression, with
+    correct crontab day-of-week semantics (0/7=Sunday) and the given timezone.
+
+    This is the single source of truth shared by `validate_cron` (which validates
+    with a placeholder tz) and the scheduler (which schedules with the real tz),
+    so what validates can always be scheduled."""
+    from apscheduler.triggers.cron import CronTrigger
+    fields = expr.split()
+    if len(fields) != 5:
+        raise ValueError(f"cron expression must have 5 fields, got {len(fields)}")
+    minute, hour, day, month, dow = fields
+    return CronTrigger(
+        minute=minute, hour=hour, day=day, month=month,
+        day_of_week=_convert_cron_dow_field(dow), timezone=timezone,
+    )
+
+
 def validate_cron(expr: str, field: str = "cron") -> str:
     """Validate a cron expression via APScheduler. Raises ValueError on bad input."""
     if not isinstance(expr, str) or not expr.strip():
         raise ValueError(f"{field} must not be empty")
     expr = expr.strip()
-    from apscheduler.triggers.cron import CronTrigger
     try:
-        CronTrigger.from_crontab(expr, timezone="UTC")
+        make_cron_trigger(expr, "UTC")
     except Exception as e:
         raise ValueError(f"invalid {field} expression: {e}")
     return expr

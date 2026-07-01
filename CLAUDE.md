@@ -47,7 +47,7 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 - **Lockfiles** at `{tmp_dir}/locks/<pool>_<volume>.lock` — cooperative exclusive locks, always wrap in try/finally
 - **Progress** stored in-memory, polled by frontend every 2s via `GET /api/task/<id>/progress`
 - **Task persistence** to `{config_dir}/vshipper_tasks.json` — incomplete tasks → marked failed on restart
-- **Scheduler** in `scheduler_service.py` — APScheduler `BackgroundScheduler`, jobs persisted to `{config_dir}/vshipper_schedules.json`
+- **Scheduler** in `scheduler_service.py` — APScheduler `BackgroundScheduler`, jobs persisted to `{config_dir}/vshipper_schedules.json`. Cron is interpreted in the container's `TZ` env var (falls back to host local zone, then UTC). Triggers are built via `make_cron_trigger` in `validation.py` (the shared parser used by both `validate_cron` and the scheduler) — it fixes crontab day-of-week numbering (`0`/`7`=Sun, `1`=Mon), which APScheduler's `from_crontab` gets wrong for numeric weekdays
 - **Remote pools** are rsync daemon targets (not SSH, not mounted FS); local pools are direct paths
 - **Log to stdout** with `print(..., flush=True)` — prefix `[TASK:id]` for task logs; a stdout interceptor in `task_queue.py` captures these into an in-memory per-task buffer, retrievable via `GET /api/task/<id>/logs`
 
