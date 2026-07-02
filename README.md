@@ -8,7 +8,7 @@ Docker volume migration and backup tool with a web UI. Stateless, containerized,
 
 - **Web UI** — responsive dashboard with login, pool browser, and task history
 - **Pool Management** — local pools and remote rsync daemon pools
-- **Volume Migration** — rsync-based with permission preservation and optional verify + delete-source
+- **Volume Migration** — rsync-based with permission preservation and optional verify + delete-source; remote→remote supported via a destination v-helper pull
 - **Volume Permissions** — view and change a volume's owner, group, and octal mode (`chmod -R` / `chown -R`) from the UI, on local and remote (v-helper) pools
 - **Container Awareness** — optional Docker socket integration shows which containers use each volume (with running/stopped status) and warns before migrating, renaming, or deleting a volume that's in use
 - **Backup / Restore** — tar.gz archives to local or remote rsync backup pools
@@ -76,9 +76,11 @@ web_ui:
 |---|---|
 | `local` | Direct filesystem access. `pool` is the absolute path. |
 | `remote` | rsync daemon protocol. Requires `remote_host` (`host:port`) and `rsync_module`. `pool` is ignored. |
-| `remote` + v-helper | Add `api_host` and `api_key` to connect a [v-helper](https://github.com/ZeroOmar/v-helper) sidecar. Enables create/rename volume and real disk free space. File transfers still use rsync. |
+| `remote` + v-helper | Add `api_host` and `api_key` to connect a [v-helper](https://github.com/ZeroOmar/v-helper) sidecar. Enables create/rename volume, real disk free space, and **remote→remote migration** (see below). File transfers still use rsync. |
 
 Remote pools must be accessible via the rsync daemon protocol (`rsync://host:port/module`). SSH is not supported. For NFS/CIFS-mounted paths, use `pool_type: local` with the mount path.
+
+**Remote→remote migration** — native rsync cannot transfer daemon-to-daemon ("source and destination cannot both be remote"). When both pools are remote and the **destination** has a v-helper (`api_host`/`api_key`), v-shipper instructs that v-helper to pull directly from the source's rsync module and streams its progress and logs back into the task. This requires the destination host to reach the source's rsync daemon on port 873, and the source's rsync `hosts allow` to include the destination host. Without a v-helper on the destination, the migration falls back to direct rsync and reports the daemon-to-daemon error.
 
 ### Encoding the admin password
 
@@ -271,10 +273,10 @@ curl -X POST -b cookies.txt http://localhost/api/debug/cleanup
 
 Pushing a semver tag triggers GitHub Actions to (1) build and push the image and (2) publish a GitHub Release. Use an **annotated** tag — its message becomes the release notes (there is no CHANGELOG.md; each release carries its own notes):
 ```bash
-git tag -a 0.9.2 -F notes.md   # notes.md = curated release notes
-git push origin 0.9.2
-# → ghcr.io/zeroomar/v-shipper:0.9.2
-# → https://github.com/ZeroOmar/v-shipper/releases/tag/0.9.2
+git tag -a 0.10.0 -F notes.md   # notes.md = curated release notes
+git push origin 0.10.0
+# → ghcr.io/zeroomar/v-shipper:0.10.0
+# → https://github.com/ZeroOmar/v-shipper/releases/tag/0.10.0
 ```
 
 ## Limitations

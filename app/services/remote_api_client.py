@@ -116,10 +116,13 @@ class RemoteApiClient:
         """Map each remote volume to containers using it: {volume: [{name, status}]}.
 
         Returns {} if v-helper has no Docker access or predates this endpoint.
+        The swallowed error is logged so a silently-empty container view is
+        diagnosable (unreachable v-helper, bad api_key, missing endpoint).
         """
         try:
             return self._request("GET", "/docker/users")
-        except RemoteApiError:
+        except RemoteApiError as e:
+            print(f"[DOCKER] {self._base}/docker/users unavailable — returning no containers: {e}", flush=True)
             return {}
 
     def stop_container(self, name: str, timeout: int = 120) -> None:
@@ -133,6 +136,38 @@ class RemoteApiClient:
     def start_container(self, name: str) -> None:
         """Start a container by name."""
         self._request("POST", "/docker/container/start", {"name": name})
+
+    def rsync_pull(self, source_host: str, source_module: str, source_volume: str,
+                   dest: str, delete: bool = False,
+                   bwlimit: Optional[int] = None) -> str:
+        """Start a background rsync pull on this (destination) v-helper.
+
+        The remote v-helper acts as an rsync client and pulls
+        ``rsync://{source_host}/{source_module}/{source_volume}/`` into its own
+        local ``dest`` volume. Used for remote→remote migrations, which native
+        rsync cannot do daemon-to-daemon. Returns the remote job id to poll.
+
+        Raises RemoteApiError (with "404" in the message) against a v-helper too
+        old to expose this endpoint — callers fall back to plain rsync.
+        """
+        body = {
+            "source_host": source_host,
+            "source_module": source_module,
+            "source_volume": source_volume,
+            "dest": dest,
+            "delete": delete,
+        }
+        if bwlimit is not None:
+            body["bwlimit"] = bwlimit
+        return self._request("POST", "/rsync/pull", body)["job_id"]
+
+    def rsync_job_log(self, job_id: str, offset: int = 0) -> Dict[str, Any]:
+        """Poll a pull job: {state, percent, returncode, error, lines, next_offset}.
+
+        ``lines`` are the log lines from *offset* onward; ``next_offset`` is the
+        offset to pass on the next poll to get only new lines.
+        """
+        return self._request("GET", f"/rsync/job/{job_id}/log?offset={int(offset)}")
 
 
 def client_for_pool(pool: Dict[str, Any]) -> Optional[RemoteApiClient]:

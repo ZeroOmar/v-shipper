@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 from app.services.task_queue import get_task_queue
 from app.services import container_control
+from app.services.remote_api_client import client_for_pool, RemoteApiError
 from app.validation import safe_join
 
 
@@ -67,9 +68,34 @@ class MigrationService:
 
             # Execute rsync (--delete when overwriting to make it a complete replacement)
             overwrite = conflict_resolution == 'overwrite'
-            rsync_success, rsync_error = self._rsync_volume(
-                task_id, source_path, dest_path, source_pool, dest_pool, overwrite=overwrite
-            )
+            rsync_success, rsync_error = None, None
+
+            # Native rsync cannot transfer daemon-to-daemon. When both pools are
+            # remote, have the destination v-helper pull from the source's rsync
+            # module instead. Without a v-helper on the destination (or with one
+            # too old to expose the endpoint) we fall through to the direct rsync
+            # below, which surfaces the clear "cannot both be remote" error.
+            both_remote = (source_pool.get("pool_type") == "remote"
+                           and dest_pool.get("pool_type") == "remote")
+            if both_remote:
+                dest_api = client_for_pool(dest_pool)
+                if dest_api is not None:
+                    try:
+                        rsync_success, rsync_error = self._rsync_pull_via_helper(
+                            task_id, source_pool, source_volume_name, effective_dest,
+                            dest_api, overwrite=overwrite
+                        )
+                    except RemoteApiError as e:
+                        if "404" in str(e):
+                            print(f"[TASK:{task_id}] Destination v-helper has no rsync-pull "
+                                  f"endpoint (too old); falling back to direct rsync", flush=True)
+                        else:
+                            rsync_success, rsync_error = False, f"Remote pull failed: {e}"
+
+            if rsync_success is None:
+                rsync_success, rsync_error = self._rsync_volume(
+                    task_id, source_path, dest_path, source_pool, dest_pool, overwrite=overwrite
+                )
             if not rsync_success:
                 error_msg = rsync_error or "Rsync failed"
                 self.task_queue.complete_task(task_id, success=False, error=error_msg)
@@ -183,6 +209,58 @@ class MigrationService:
             error_msg = f"Rsync execution failed: {e}"
             print(f"[TASK:{task_id}] [ERROR] {error_msg}", flush=True)
             return False, error_msg
+
+    def _rsync_pull_via_helper(self, task_id: str, source_pool: dict, source_volume_name: str,
+                               dest_volume_name: str, dest_api, overwrite: bool = False) -> tuple[bool, str]:
+        """Drive a remote→remote migration by having the destination v-helper
+        pull from the source's rsync module, streaming its progress/log into
+        this task. Mirrors ``_rsync_volume``'s (success, error) contract.
+
+        ``RemoteApiError`` from *starting* the pull propagates to the caller (so
+        a 404 against an old v-helper can trigger fallback); a failure once the
+        job is running is returned as ``(False, error)``.
+        """
+        source_host = source_pool.get("remote_host")
+        source_module = source_pool.get("rsync_module")
+        print(f"[TASK:{task_id}] Remote→remote: destination v-helper will pull "
+              f"rsync://{source_host}/{source_module}/{source_volume_name}/ → {dest_volume_name}",
+              flush=True)
+
+        job_id = dest_api.rsync_pull(
+            source_host, source_module, source_volume_name, dest_volume_name,
+            delete=overwrite,
+        )
+
+        offset = 0
+        while True:
+            try:
+                status = dest_api.rsync_job_log(job_id, offset)
+            except RemoteApiError as e:
+                error_msg = f"Lost contact with destination v-helper during pull: {e}"
+                print(f"[TASK:{task_id}] [ERROR] {error_msg}", flush=True)
+                return False, error_msg
+
+            for line in status.get("lines", []):
+                print(f"[TASK:{task_id}] {line}", flush=True)
+            offset = status.get("next_offset", offset)
+
+            percent = status.get("percent")
+            if isinstance(percent, int):
+                self.task_queue.update_progress(task_id, {
+                    "progress_percent": min(80, 10 + int(percent * 0.7)),
+                    "current_operation": f"Pulling {source_volume_name} → {dest_volume_name} ({percent}%)",
+                })
+
+            state = status.get("state")
+            if state == "done":
+                return True, ""
+            if state == "failed":
+                error_msg = status.get("error") or "Remote pull failed"
+                for line in (error_msg.splitlines() or [""]):
+                    print(f"[TASK:{task_id}] [ERROR] {line}", flush=True)
+                return False, error_msg
+
+            time.sleep(2)
 
     def _cleanup_partial_destination(self, task_id: str, dest_pool_name: str, dest_volume_name: str):
         """Remove partial destination volume on failure (local or remote)."""

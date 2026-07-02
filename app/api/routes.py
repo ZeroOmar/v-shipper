@@ -208,19 +208,32 @@ async def list_volume_containers(pool: str, session: dict = Depends(require_auth
     config = get_config()
     volume_service = get_volume_service(config)
     pool_cfg = volume_service.get_pool_by_name(pool)
-    if not pool_cfg or not pool_cfg.get("docker_socket"):
+    if not pool_cfg:
+        print(f"[DOCKER] pool '{pool}' not found — no container view", flush=True)
+        return {}
+    if not pool_cfg.get("docker_socket"):
+        print(f"[DOCKER] pool '{pool}' has docker_socket disabled — no container view", flush=True)
         return {}
 
     try:
         if pool_cfg.get("pool_type") == "remote":
             api = client_for_pool(pool_cfg)
-            return api.docker_users() if api else {}
+            if not api:
+                print(f"[DOCKER] pool '{pool}' has docker_socket set but no api_host/api_key — "
+                      f"remote container view needs the v-helper API", flush=True)
+                return {}
+            result = api.docker_users()
+        else:
+            volumes, _ = volume_service.list_volumes(pool)
+            volume_names = [v.name for v in volumes]
+            result = get_docker_service().get_volume_container_map(pool_cfg, volume_names)
 
-        volumes, _ = volume_service.list_volumes(pool)
-        volume_names = [v.name for v in volumes]
-        return get_docker_service().get_volume_container_map(pool_cfg, volume_names)
+        with_containers = sum(1 for v in (result or {}).values() if v)
+        print(f"[DOCKER] pool '{pool}' ({pool_cfg.get('pool_type')}): "
+              f"{len(result or {})} volumes, {with_containers} with containers", flush=True)
+        return result
     except Exception as e:
-        print(f"[ERROR] Failed to list volume containers: {e}", flush=True)
+        print(f"[ERROR] Failed to list volume containers for pool '{pool}': {e}", flush=True)
         return {}
 
 

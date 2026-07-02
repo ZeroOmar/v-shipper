@@ -29,8 +29,8 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 | `app/services/volume_service.py` | Volume discovery, disk stats, rename/delete, permissions (chmod/chown) |
 | `app/services/docker_service.py` | Docker socket client — maps volumes to the containers using them; stops/starts containers (local) |
 | `app/services/container_control.py` | Stop/start the containers using a volume around an operation — dispatches local (docker_service) vs remote (v-helper API) |
-| `app/services/remote_api_client.py` | HTTP client for the v-helper control API |
-| `app/services/migration_service.py` | rsync orchestration, lockfiles |
+| `app/services/remote_api_client.py` | HTTP client for the v-helper control API (fs/docker control + rsync-pull job start/poll) |
+| `app/services/migration_service.py` | rsync orchestration, lockfiles; remote→remote via destination v-helper pull |
 | `app/services/backup_service.py` | tar archiving, remote restore via staging |
 | `app/services/task_queue.py` | Single-worker FIFO queue (serial execution), progress tracking, crash recovery, per-task log capture |
 | `app/services/bulk_service.py` | Runs a set of single-item ops sequentially under one summary task (mirrors scheduled-backup grouping) |
@@ -49,6 +49,7 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 - **Task persistence** to `{config_dir}/vshipper_tasks.json` — incomplete tasks → marked failed on restart
 - **Scheduler** in `scheduler_service.py` — APScheduler `BackgroundScheduler`, jobs persisted to `{config_dir}/vshipper_schedules.json`. Cron is interpreted in the container's `TZ` env var (falls back to host local zone, then UTC). Triggers are built via `make_cron_trigger` in `validation.py` (the shared parser used by both `validate_cron` and the scheduler) — it fixes crontab day-of-week numbering (`0`/`7`=Sun, `1`=Mon), which APScheduler's `from_crontab` gets wrong for numeric weekdays
 - **Remote pools** are rsync daemon targets (not SSH, not mounted FS); local pools are direct paths
+- **Remote→remote migration** — rsync refuses daemon-to-daemon transfers, so when both pools are remote and the destination has a v-helper API, `migration_service` calls `remote_api_client.rsync_pull` on the destination (it runs an rsync *client* pulling from the source's module) and polls `rsync_job_log` for progress/logs. Falls back to direct rsync (which surfaces the "cannot both be remote" error) when the destination has no v-helper or one too old to expose `/rsync/pull` (404)
 - **Log to stdout** with `print(..., flush=True)` — prefix `[TASK:id]` for task logs; a stdout interceptor in `task_queue.py` captures these into an in-memory per-task buffer, retrievable via `GET /api/task/<id>/logs`
 
 ## Adding a new operation
