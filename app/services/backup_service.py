@@ -3,12 +3,13 @@
 import datetime
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
 from app.services.task_queue import get_task_queue
 from app.services import container_control
-from app.validation import safe_join
+from app.validation import safe_join, validate_backup_file
 
 
 # tar exits 1 for a grab-bag of conditions. Some are harmless (a file changed
@@ -86,6 +87,10 @@ class BackupService:
                     label=f"Pulling {source_volume_name} from remote",
                 )
                 if not ok:
+                    if self.task_queue.is_cancelled(task_id):
+                        # Staging dir is removed by the finally block below.
+                        self.task_queue.finalize_cancelled(task_id)
+                        return False
                     error_msg = f"Failed to pull volume from remote pool"
                     self.task_queue.complete_task(task_id, success=False, error=error_msg)
                     return False
@@ -134,6 +139,10 @@ class BackupService:
                     Path(archive_path).unlink(missing_ok=True)
                 except OSError:
                     pass
+                if self.task_queue.is_cancelled(task_id):
+                    print(f"[TASK:{task_id}] Backup cancelled — removed partial archive", flush=True)
+                    self.task_queue.finalize_cancelled(task_id)
+                    return False
                 error_msg = "Archive creation failed"
                 self.task_queue.complete_task(task_id, success=False, error=error_msg)
                 return False
@@ -154,12 +163,17 @@ class BackupService:
                 })
                 
                 if not self._transfer_to_remote_backup(task_id, archive_path, remote_backup_pool, archive_name):
-                    error_msg = "Failed to transfer backup to remote pool"
-                    self.task_queue.complete_task(task_id, success=False, error=error_msg)
                     try:
                         Path(archive_path).unlink()
                     except:
                         pass
+                    if self.task_queue.is_cancelled(task_id):
+                        # Best-effort: drop any partial archive already pushed to the remote module.
+                        self._cleanup_remote_backup_archive(task_id, remote_backup_pool, archive_name)
+                        self.task_queue.finalize_cancelled(task_id)
+                        return False
+                    error_msg = "Failed to transfer backup to remote pool"
+                    self.task_queue.complete_task(task_id, success=False, error=error_msg)
                     return False
             
             self.task_queue.update_progress(task_id, {
@@ -208,9 +222,18 @@ class BackupService:
                 stderr=subprocess.PIPE,
                 text=True
             )
+            self.task_queue.register_process(task_id, process)
 
-            _, stderr = process.communicate()
-            return_code = process.returncode
+            try:
+                _, stderr = process.communicate()
+                return_code = process.returncode
+            finally:
+                self.task_queue.unregister_process(task_id, process)
+
+            # A cancel terminates tar mid-archive; report failure so the caller's
+            # cancellation handling unlinks the partial archive.
+            if self.task_queue.is_cancelled(task_id):
+                return False
 
             stderr_lines = stderr.strip().splitlines() if stderr.strip() else []
             for line in stderr_lines:
@@ -306,6 +329,10 @@ class BackupService:
                     label=f"Downloading {backup_file}",
                 )
                 if not ok:
+                    if self.task_queue.is_cancelled(task_id):
+                        # Downloaded staging file is removed by the finally block.
+                        self.task_queue.finalize_cancelled(task_id)
+                        return False
                     self.task_queue.complete_task(
                         task_id, success=False,
                         error=f"Failed to download {backup_file} from remote pool"
@@ -346,7 +373,18 @@ class BackupService:
                 ["tar", "-xzf", str(backup_path), "-C", str(temp_extract_dir)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
-            _, stderr = process.communicate()
+            self.task_queue.register_process(task_id, process)
+            try:
+                _, stderr = process.communicate()
+            finally:
+                self.task_queue.unregister_process(task_id, process)
+
+            if self.task_queue.is_cancelled(task_id):
+                print(f"[TASK:{task_id}] Restore cancelled — removing partial extraction", flush=True)
+                shutil.rmtree(temp_extract_dir, ignore_errors=True)
+                self.task_queue.finalize_cancelled(task_id)
+                return False
+
             if process.returncode != 0:
                 error_msg = f"Restore failed: {stderr.strip()}"
                 print(f"[TASK:{task_id}] {error_msg}", flush=True)
@@ -385,6 +423,14 @@ class BackupService:
                 )
                 shutil.rmtree(temp_extract_dir, ignore_errors=True)
                 if not ok:
+                    if self.task_queue.is_cancelled(task_id):
+                        print(f"[TASK:{task_id}] Restore cancelled — removing partial destination volume", flush=True)
+                        try:
+                            self.volume_service.delete_volume(dest_pool_name, dest_volume_name, task_id=task_id)
+                        except Exception as e:
+                            print(f"[TASK:{task_id}] Could not remove partial destination: {e}", flush=True)
+                        self.task_queue.finalize_cancelled(task_id)
+                        return False
                     self.task_queue.complete_task(
                         task_id, success=False,
                         error="Failed to transfer restore to remote pool"
@@ -450,6 +496,38 @@ class BackupService:
             print(f"[TASK:{task_id}] Archive uploaded successfully", flush=True)
         return ok
 
+    def _cleanup_remote_backup_archive(self, task_id: str, remote_pool: dict, archive_name: str) -> None:
+        """Best-effort delete of a (possibly partial) archive from a remote rsync
+        module — used when a backup to a remote pool is cancelled mid-upload.
+
+        rsync daemon modules expose no delete verb, so mirror the retention
+        trick: sync an empty dir with a filter that deletes only this file."""
+        remote_host = remote_pool.get('remote_host')
+        rsync_module = remote_pool.get('rsync_module')
+        if not remote_host or not rsync_module:
+            return
+        try:
+            archive_name = validate_backup_file(archive_name)
+        except ValueError:
+            return
+        remote_base = f"rsync://{remote_host}/{rsync_module}/"
+        try:
+            with tempfile.TemporaryDirectory() as empty_dir:
+                cmd = [
+                    "rsync", "-az", "--delete",
+                    f"--filter=+ {archive_name}",
+                    "--filter=- *",
+                    f"{empty_dir}/",
+                    remote_base,
+                ]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                if r.returncode == 0:
+                    print(f"[TASK:{task_id}] Removed partial remote archive: {archive_name}", flush=True)
+                else:
+                    print(f"[TASK:{task_id}] Could not remove partial remote archive {archive_name}: {r.stderr.strip()}", flush=True)
+        except Exception as e:
+            print(f"[TASK:{task_id}] Error removing partial remote archive {archive_name}: {e}", flush=True)
+
     def _stream_rsync(self, task_id: str, cmd: list, progress_range: tuple = (0, 100),
                       label: str = "Transferring") -> bool:
         """Run rsync, streaming output to the task log with live progress updates."""
@@ -463,27 +541,35 @@ class BackupService:
                 text=True,
                 bufsize=1,
             )
-            while True:
-                line = proc.stdout.readline()
-                if not line:
-                    if proc.poll() is not None:
-                        break
-                    continue
-                line = line.rstrip()
-                if not line:
-                    continue
-                print(f"[TASK:{task_id}] {line}", flush=True)
-                if "%" in line:
-                    try:
-                        pct = int(line.split("%")[0].split()[-1])
-                        mapped = start_pct + int(pct * (end_pct - start_pct) / 100)
-                        self.task_queue.update_progress(task_id, {
-                            "progress_percent": min(mapped, end_pct),
-                            "current_operation": f"{label}: {pct}%",
-                        })
-                    except (ValueError, IndexError):
-                        pass
-            proc.wait()
+            self.task_queue.register_process(task_id, proc)
+            try:
+                while True:
+                    line = proc.stdout.readline()
+                    if not line:
+                        if proc.poll() is not None:
+                            break
+                        continue
+                    line = line.rstrip()
+                    if not line:
+                        continue
+                    print(f"[TASK:{task_id}] {line}", flush=True)
+                    if "%" in line:
+                        try:
+                            pct = int(line.split("%")[0].split()[-1])
+                            mapped = start_pct + int(pct * (end_pct - start_pct) / 100)
+                            self.task_queue.update_progress(task_id, {
+                                "progress_percent": min(mapped, end_pct),
+                                "current_operation": f"{label}: {pct}%",
+                            })
+                        except (ValueError, IndexError):
+                            pass
+                proc.wait()
+            finally:
+                self.task_queue.unregister_process(task_id, proc)
+            # A cancel terminates rsync mid-transfer — surface as failure so the
+            # caller runs its cancellation cleanup.
+            if self.task_queue.is_cancelled(task_id):
+                return False
             if proc.returncode != 0:
                 print(f"[TASK:{task_id}] rsync exited with code {proc.returncode}", flush=True)
             return proc.returncode == 0

@@ -6,9 +6,14 @@ import uuid
 import json
 import time
 import queue
+import subprocess
 from typing import Dict, Any, Optional, Callable, List
 from threading import Thread, Lock
 from pathlib import Path
+
+# Grace period (seconds) to wait after SIGTERM before escalating to SIGKILL when
+# cancelling a running task's subprocess.
+CANCEL_GRACE_SECONDS = 10
 
 MAX_TASK_LOG_LINES = 300
 
@@ -53,6 +58,15 @@ class TaskQueue:
         self.log_lock = Lock()
         self.log_lines: Dict[str, List[str]] = {}
         self.running_task_id: Optional[str] = None
+        # Cancellation state. `_cancelled` holds ids a user asked to cancel;
+        # long-running work polls is_cancelled() at safe points. `_procs` maps a
+        # task id to its live subprocess so a cancel request (running in a
+        # different thread than the worker) can send it SIGTERM/SIGKILL directly
+        # instead of blocking on the wait. Guarded by proc_lock — NOT self.lock,
+        # which must stay free while we terminate/join a process.
+        self._cancelled: set = set()
+        self._procs: Dict[str, subprocess.Popen] = {}
+        self.proc_lock = Lock()
         self.locks_dir = Path(tmp_dir) / "locks"
         self.locks_dir.mkdir(exist_ok=True, parents=True)
         Path(config_dir).mkdir(parents=True, exist_ok=True)
@@ -168,7 +182,7 @@ class TaskQueue:
 
         with self.lock:
             task = self.tasks[task_id]
-            if task["status"] in ("completed", "failed"):
+            if task["status"] in ("completed", "failed", "cancelled"):
                 return  # already finalized — don't re-stamp or fire a second notification
             task["status"] = "completed" if success else "failed"
             task["completed_at"] = time.time()
@@ -195,6 +209,125 @@ class TaskQueue:
                 svc.notify_task_completion(task)
         except Exception as e:
             print(f"[TASK:{task.get('task_id')}] [WARNING] Notification error: {e}", flush=True)
+
+    # ── Cancellation ───────────────────────────────────────────────────────────
+
+    def finalize_cancelled(self, task_id: str, error: str = "Cancelled by user"):
+        """Finalize a task with the terminal 'cancelled' status.
+
+        Like complete_task, first finalize wins: once a task is cancelled a later
+        complete_task(success=False) from the service running it is a no-op, so the
+        cancel outcome is preserved instead of being recorded as a plain failure.
+        """
+        if task_id not in self.tasks:
+            return
+
+        with self.lock:
+            task = self.tasks[task_id]
+            if task["status"] in ("completed", "failed", "cancelled"):
+                return  # already finalized
+            task["status"] = "cancelled"
+            task["completed_at"] = time.time()
+            task["error"] = error
+            if self.running_task_id == task_id:
+                self.running_task_id = None
+            self._save_tasks()
+            task_snapshot = dict(task)
+
+        print(f"[TASK:{task_id}] Cancelled: {error}", flush=True)
+        Thread(target=self._fire_notification, args=[task_snapshot], daemon=True).start()
+
+    def is_cancelled(self, task_id: str) -> bool:
+        """Whether a cancel has been requested for this task (cooperative check)."""
+        with self.proc_lock:
+            return task_id in self._cancelled
+
+    def register_process(self, task_id: str, proc: subprocess.Popen):
+        """Register a live subprocess so a cancel request can terminate it.
+
+        If a cancel was already requested for this task before the process was
+        spawned, terminate it immediately so we don't start work that's doomed.
+        """
+        with self.proc_lock:
+            self._procs[task_id] = proc
+            already_cancelled = task_id in self._cancelled
+        if already_cancelled:
+            self._terminate_process(task_id)
+
+    def unregister_process(self, task_id: str, proc: Optional[subprocess.Popen] = None):
+        """Remove a task's subprocess from the registry once it has exited."""
+        with self.proc_lock:
+            current = self._procs.get(task_id)
+            if current is not None and (proc is None or current is proc):
+                del self._procs[task_id]
+
+    def _terminate_process(self, task_id: str):
+        """Send SIGTERM (then SIGKILL after a grace period) to a task's process.
+
+        The process's own streaming loop drains and logs its remaining output and
+        the (negative) return code, so the killed command's output ends up in the
+        task log. Safe to call when no process is registered (no-op)."""
+        with self.proc_lock:
+            proc = self._procs.get(task_id)
+        if proc is None or proc.poll() is not None:
+            return
+        print(f"[TASK:{task_id}] Cancellation requested — sending SIGTERM to process (pid {proc.pid})", flush=True)
+        try:
+            proc.terminate()
+        except Exception as e:
+            print(f"[TASK:{task_id}] Failed to send SIGTERM: {e}", flush=True)
+            return
+        try:
+            proc.wait(timeout=CANCEL_GRACE_SECONDS)
+            print(f"[TASK:{task_id}] Process stopped after SIGTERM (return code {proc.returncode})", flush=True)
+        except subprocess.TimeoutExpired:
+            print(f"[TASK:{task_id}] Process did not exit within {CANCEL_GRACE_SECONDS}s — sending SIGKILL", flush=True)
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+                print(f"[TASK:{task_id}] Process killed (return code {proc.returncode})", flush=True)
+            except Exception as e:
+                print(f"[TASK:{task_id}] Failed to SIGKILL process: {e}", flush=True)
+
+    def request_cancel(self, task_id: str) -> Optional[str]:
+        """Request cancellation of a task.
+
+        Returns 'cancelled' if the task was pending and is now finalized, or
+        'cancelling' if it was running (the worker thread will observe the flag,
+        clean up partial artifacts, and finalize). Returns None if the task is
+        missing or already in a terminal state.
+        """
+        task = self.tasks.get(task_id)
+        if not task or task.get("status") in ("completed", "failed", "cancelled"):
+            return None
+
+        # Flag this task, and any currently-running child of it (a bulk/scheduled
+        # summary drives its sub-tasks in-process; the running one owns the live
+        # subprocess). Only one task runs at a time, so running_task_id is that child.
+        child_id = None
+        running_id = self.running_task_id
+        if running_id and running_id != task_id:
+            child = self.tasks.get(running_id)
+            if child and child.get("params", {}).get("parent_task_id") == task_id:
+                child_id = running_id
+
+        with self.proc_lock:
+            self._cancelled.add(task_id)
+            if child_id:
+                self._cancelled.add(child_id)
+
+        print(f"[TASK:{task_id}] Cancellation requested by user", flush=True)
+
+        if task.get("status") == "pending":
+            # Never started — the worker skips non-pending tasks when dequeued.
+            self.finalize_cancelled(task_id)
+            return "cancelled"
+
+        # Running: kill the live subprocess(es); the worker path handles cleanup.
+        self._terminate_process(task_id)
+        if child_id:
+            self._terminate_process(child_id)
+        return "cancelling"
 
     def create_lockfile(self, pool: str, volume: str) -> str:
         """Create exclusive lock for volume operation."""

@@ -1568,7 +1568,7 @@ async function showTaskProgress(taskId) {
             addOrUpdateTaskHistory(data);
             renderTaskHistory();
             
-            if (data.status === 'completed' || data.status === 'failed') {
+            if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
                 clearInterval(currentTaskPollInterval);
                 currentTaskId = null;
                 setTimeout(() => {
@@ -2063,34 +2063,57 @@ async function openScheduleForm(jobId = null) {
         { label: 'Monthly 1st', value: '0 2 1 * *' },
     ];
 
-    // Detect volumes in this schedule that no longer exist in their pool
-    const allMissingVols = dockerPools.flatMap(p => {
-        const current = volumesByPool[p.name] || [];
-        return (job?.volumes || [])
-            .filter(v => v.pool === p.name && !current.includes(v.volume))
-            .map(v => `${v.pool}/${v.volume}`);
-    });
+    // Detect volumes in this schedule that no longer exist. A volume is missing
+    // either because it was removed from an existing pool, OR because its whole
+    // pool is gone from the config (an "orphan" pool no longer in dockerPools).
+    // Both cases must be surfaced as removable checkboxes, otherwise a volume
+    // from a deleted pool would vanish from the UI yet linger in the schedule.
+    const jobVols = job?.volumes || [];
+    const knownPoolNames = new Set(dockerPools.map(p => p.name));
+    const orphanPoolNames = [...new Set(
+        jobVols.map(v => v.pool).filter(name => !knownPoolNames.has(name))
+    )];
 
-    const volumeGroupsHtml = dockerPools.map(p => {
-        const currentVols = volumesByPool[p.name] || [];
-        const missingInPool = (job?.volumes || [])
-            .filter(v => v.pool === p.name && !currentVols.includes(v.volume))
-            .map(v => v.volume);
+    const allMissingVols = jobVols
+        .filter(v => !(volumesByPool[v.pool] || []).includes(v.volume))
+        .map(v => `${v.pool}/${v.volume}`);
+
+    // Render one group per pool. `missingInPool` are volumes checked in the
+    // schedule but absent from the live pool listing (or in an orphan pool,
+    // where the pool itself no longer exists so every scheduled volume is missing).
+    const renderPoolGroup = (poolName, currentVols, missingInPool) => {
         const allVols = [...currentVols, ...missingInPool];
         if (!allVols.length) return '';
+        const poolGone = !knownPoolNames.has(poolName);
         return `<div>
-            <div class="schedule-pool-group-title">${escapeHtml(p.name)}</div>
+            <div class="schedule-pool-group-title">${escapeHtml(poolName)}${poolGone ? ' <span class="schedule-vol-missing-badge">⚠ pool not found</span>' : ''}</div>
             ${allVols.map(v => {
-                const key = `${p.name}::${v}`;
+                const key = `${poolName}::${v}`;
                 const checked = selectedVols.has(key) ? 'checked' : '';
                 const missing = missingInPool.includes(v);
                 return `<label class="schedule-vol-item${missing ? ' schedule-vol-missing' : ''}">
-                    <input type="checkbox" data-pool="${escapeHtml(p.name)}" data-vol="${escapeHtml(v)}" ${checked}>
+                    <input type="checkbox" data-pool="${escapeHtml(poolName)}" data-vol="${escapeHtml(v)}" ${checked}>
                     ${escapeHtml(v)}${missing ? ' <span class="schedule-vol-missing-badge">⚠ not found</span>' : ''}
                 </label>`;
             }).join('')}
         </div>`;
-    }).join('');
+    };
+
+    const volumeGroupsHtml = [
+        ...dockerPools.map(p => {
+            const currentVols = volumesByPool[p.name] || [];
+            const missingInPool = jobVols
+                .filter(v => v.pool === p.name && !currentVols.includes(v.volume))
+                .map(v => v.volume);
+            return renderPoolGroup(p.name, currentVols, missingInPool);
+        }),
+        ...orphanPoolNames.map(poolName => {
+            const missingVols = jobVols
+                .filter(v => v.pool === poolName)
+                .map(v => v.volume);
+            return renderPoolGroup(poolName, [], missingVols);
+        }),
+    ].join('');
 
     const missingWarning = allMissingVols.length
         ? `<div class="warning-banner" style="margin-bottom:12px;">⚠ ${allMissingVols.length} volume${allMissingVols.length !== 1 ? 's' : ''} in this schedule no longer exist. Uncheck them and save to remove from the schedule.</div>`
@@ -2672,7 +2695,7 @@ async function _refreshTaskDetail(taskId) {
             if (idx >= 0) taskHistory[idx] = { ...taskHistory[idx], ...prog };
             _renderTaskDetail(prog, logs.lines || []);
 
-            if (prog.status === 'completed' || prog.status === 'failed') {
+            if (prog.status === 'completed' || prog.status === 'failed' || prog.status === 'cancelled') {
                 if (_taskDetailPollInterval) {
                     clearInterval(_taskDetailPollInterval);
                     _taskDetailPollInterval = null;
@@ -2680,6 +2703,23 @@ async function _refreshTaskDetail(taskId) {
             }
         }
     } catch (e) { /* network error — silently skip */ }
+}
+
+async function cancelTask(taskId) {
+    if (!taskId) return;
+    if (!confirm('Cancel this task? A running operation will be stopped and any partial data cleaned up.')) return;
+    try {
+        const res = await fetch(`${API_BASE}/task/${taskId}/cancel`, { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+            showSuccess(data.status === 'cancelled' ? 'Task cancelled' : 'Cancelling task…');
+            _refreshTaskDetail(taskId);
+        } else {
+            showError(data.detail || 'Failed to cancel task');
+        }
+    } catch (e) {
+        showError(`Error: ${e.message}`);
+    }
 }
 
 function _renderTaskDetail(task, logLines) {
@@ -2743,6 +2783,9 @@ function _renderTaskDetail(task, logLines) {
             <span class="task-type-pill type-${(task.task_type || 'operation').replace(/[^a-z0-9_]/gi, '_')}">${getTaskTypeDisplay(task.task_type)}</span>
             <span class="task-status ${task.status}">${task.status.toUpperCase()}</span>
             <span class="task-detail-target">${escapeHtml(getTaskTargetLabel(task))}</span>
+            ${(task.status === 'running' || task.status === 'pending')
+                ? `<button class="btn danger task-cancel-btn" data-action="cancel-task" data-id="${escapeHtml(task.task_id)}">Cancel</button>`
+                : ''}
         </div>
 
         <div class="task-detail-progress">
@@ -2854,6 +2897,7 @@ const ACTION_HANDLERS = {
     'open-task-detail':    (d) => openTaskDetailModalById(d.id),
     'nav-task-detail':     (d) => navigateToTaskDetail(d.id),
     'task-detail-back':    ()  => taskDetailBack(),
+    'cancel-task':         (d) => cancelTask(d.id),
     'toggle-container-tooltip': (d, el) => {
         if (!el) return;
         const willPin = !el.classList.contains('pinned');

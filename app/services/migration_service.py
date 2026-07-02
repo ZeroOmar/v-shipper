@@ -96,6 +96,19 @@ class MigrationService:
                 rsync_success, rsync_error = self._rsync_volume(
                     task_id, source_path, dest_path, source_pool, dest_pool, overwrite=overwrite
                 )
+
+            # A cancel during the transfer leaves a partially-migrated destination
+            # volume — remove it and record the task as cancelled, not failed. This
+            # matches the on-failure cleanup below; for an overwrite the volume was
+            # being replaced in place, so the pre-existing copy is already partial.
+            if self.task_queue.is_cancelled(task_id):
+                print(f"[TASK:{task_id}] Migration cancelled — cleaning up partial destination", flush=True)
+                if overwrite:
+                    print(f"[TASK:{task_id}] Note: destination was overwritten in place; removing the partially-updated volume", flush=True)
+                self._cleanup_partial_destination(task_id, dest_pool_name, effective_dest)
+                self.task_queue.finalize_cancelled(task_id)
+                return False
+
             if not rsync_success:
                 error_msg = rsync_error or "Rsync failed"
                 self.task_queue.complete_task(task_id, success=False, error=error_msg)
@@ -176,26 +189,35 @@ class MigrationService:
                 stderr=subprocess.PIPE,
                 text=True
             )
-            
-            # Monitor progress
-            for line in process.stdout:
-                line = line.strip()
-                if line:
-                    print(f"[TASK:{task_id}] {line}", flush=True)
-                    
-                    # Extract progress percentage if available
-                    if "%" in line:
-                        try:
-                            percent = int(line.split("%")[0].split()[-1])
-                            self.task_queue.update_progress(task_id, {
-                                "progress_percent": min(80, 10 + int(percent * 0.7)),
-                                "current_operation": line
-                            })
-                        except (ValueError, IndexError):
-                            pass
-            
-            return_code = process.wait()
-            
+            self.task_queue.register_process(task_id, process)
+
+            try:
+                # Monitor progress
+                for line in process.stdout:
+                    line = line.strip()
+                    if line:
+                        print(f"[TASK:{task_id}] {line}", flush=True)
+
+                        # Extract progress percentage if available
+                        if "%" in line:
+                            try:
+                                percent = int(line.split("%")[0].split()[-1])
+                                self.task_queue.update_progress(task_id, {
+                                    "progress_percent": min(80, 10 + int(percent * 0.7)),
+                                    "current_operation": line
+                                })
+                            except (ValueError, IndexError):
+                                pass
+
+                return_code = process.wait()
+            finally:
+                self.task_queue.unregister_process(task_id, process)
+
+            # A cancel terminates rsync mid-transfer, so a non-zero code here may
+            # just be the SIGTERM/SIGKILL — let the caller detect cancellation.
+            if self.task_queue.is_cancelled(task_id):
+                return False, "Cancelled by user"
+
             if return_code != 0:
                 stderr = process.stderr.read()
                 error_msg = f"Rsync failed with code {return_code}: {stderr.strip()}"
@@ -233,6 +255,17 @@ class MigrationService:
 
         offset = 0
         while True:
+            # If the user cancelled, stop the remote pull job on the destination
+            # v-helper (best-effort — tolerates an older v-helper without the
+            # endpoint) and let the caller clean up the partial destination.
+            if self.task_queue.is_cancelled(task_id):
+                print(f"[TASK:{task_id}] Cancelling remote pull job {job_id} on destination v-helper", flush=True)
+                try:
+                    dest_api.rsync_cancel(job_id)
+                except RemoteApiError as e:
+                    print(f"[TASK:{task_id}] Could not cancel remote pull job (continuing cleanup): {e}", flush=True)
+                return False, "Cancelled by user"
+
             try:
                 status = dest_api.rsync_job_log(job_id, offset)
             except RemoteApiError as e:

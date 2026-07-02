@@ -171,7 +171,7 @@ class VolumesListResponse(BaseModel):
 class TaskResponse(BaseModel):
     """Task response."""
     task_id: str
-    status: str  # pending, running, completed, failed
+    status: str  # pending, running, completed, failed, cancelled
     task_type: Optional[str] = None
     progress_percent: int = 0
 

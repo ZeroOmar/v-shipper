@@ -725,6 +725,7 @@ input[type="checkbox"] {
 .task-status.running  { background: var(--md-warn-container);       color: var(--md-on-warn-container); }
 .task-status.completed{ background: var(--md-success-container);    color: var(--md-on-success-container); }
 .task-status.failed   { background: var(--md-error-container);      color: var(--md-on-error-container); }
+.task-status.cancelled{ background: var(--md-surface-variant);      color: var(--md-on-surface-variant); }
 
 .task-card-pills { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .task-card-pills .task-status { margin-bottom: 0; }

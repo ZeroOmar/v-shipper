@@ -976,6 +976,27 @@ async def get_task_logs(task_id: str, session: dict = Depends(require_auth)):
     }
 
 
+@router.post("/api/task/{task_id}/cancel")
+async def cancel_task(task_id: str, session: dict = Depends(require_auth)):
+    """Cancel a pending or running task.
+
+    A pending task is finalized 'cancelled' and never starts; a running task's
+    subprocess is terminated and the worker cleans up partial artifacts before
+    finalizing. Returns 'cancelled' (already stopped) or 'cancelling' (in flight).
+    """
+    task_id = _validate_task_id(task_id)
+    task_queue = get_task_queue()
+    task = task_queue.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task["status"] in ("completed", "failed", "cancelled"):
+        raise HTTPException(status_code=409, detail="Task already finished")
+    state = task_queue.request_cancel(task_id)
+    if state is None:
+        raise HTTPException(status_code=409, detail="Task already finished")
+    return {"status": state}
+
+
 # ── Backup Schedule Endpoints ─────────────────────────────────────────────────
 
 def _job_to_model(job: dict) -> BackupSchedule:

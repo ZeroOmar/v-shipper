@@ -32,7 +32,7 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 | `app/services/remote_api_client.py` | HTTP client for the v-helper control API (fs/docker control + rsync-pull job start/poll) |
 | `app/services/migration_service.py` | rsync orchestration, lockfiles; remote→remote via destination v-helper pull |
 | `app/services/backup_service.py` | tar archiving, remote restore via staging |
-| `app/services/task_queue.py` | Single-worker FIFO queue (serial execution), progress tracking, crash recovery, per-task log capture |
+| `app/services/task_queue.py` | Single-worker FIFO queue (serial execution), progress tracking, crash recovery, per-task log capture, task cancellation (subprocess registry + SIGTERM/SIGKILL) |
 | `app/services/bulk_service.py` | Runs a set of single-item ops sequentially under one summary task (mirrors scheduled-backup grouping) |
 | `app/services/scheduler_service.py` | APScheduler cron backup jobs, retention (local + remote), singleton |
 | `app/templates/index.html` | SPA shell |
@@ -51,6 +51,7 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 - **Remote pools** are rsync daemon targets (not SSH, not mounted FS); local pools are direct paths
 - **Remote→remote migration** — rsync refuses daemon-to-daemon transfers, so when both pools are remote and the destination has a v-helper API, `migration_service` calls `remote_api_client.rsync_pull` on the destination (it runs an rsync *client* pulling from the source's module) and polls `rsync_job_log` for progress/logs. Falls back to direct rsync (which surfaces the "cannot both be remote" error) when the destination has no v-helper or one too old to expose `/rsync/pull` (404)
 - **Log to stdout** with `print(..., flush=True)` — prefix `[TASK:id]` for task logs; a stdout interceptor in `task_queue.py` captures these into an in-memory per-task buffer, retrievable via `GET /api/task/<id>/logs`
+- **Task cancellation** (`POST /api/task/<id>/cancel`) — `task_queue.request_cancel` flags the task (terminal status `cancelled`); a **pending** task is finalized immediately (the worker skips non-pending tasks), a **running** task's live subprocess is terminated via a `task_id`→`Popen` registry (services `register_process`/`unregister_process` around every long rsync/tar). Services poll `is_cancelled()` at safe points, clean up partial artifacts (partial dest volume via `_cleanup_partial_destination`, partial archive/staging), and call `finalize_cancelled`. Cancelling a bulk/scheduled summary breaks the loop before the next item and kills the running sub-item. Remote→remote pull jobs are stopped via v-helper `POST /rsync/job/<id>/cancel` (needs v-helper ≥ 0.10.0)
 
 ## Adding a new operation
 

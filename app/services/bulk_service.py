@@ -51,6 +51,18 @@ class BulkService:
 
         for i, op in enumerate(operations):
             item = op["item"]
+
+            # Stop before starting the next item if the batch was cancelled. The
+            # currently-running item (if any) is stopped by its own subprocess
+            # being killed and its service cancel path; everything not yet started
+            # is simply never created.
+            if self.task_queue.is_cancelled(summary_task_id):
+                remaining = len(operations) - i
+                print(f"[TASK:{summary_task_id}] Cancelled — {remaining} remaining item(s) will not run", flush=True)
+                for op_rem in operations[i:]:
+                    results[op_rem["item"]] = "cancelled"
+                break
+
             self.task_queue.update_progress(summary_task_id, {
                 "progress_percent": int(i * 100 / n) if n else 100,
                 "current_operation": f"{i + 1}/{n}: {item}",
@@ -87,11 +99,15 @@ class BulkService:
                 ok = False
                 err = str(e)
 
-            if ok:
+            sub = self.task_queue.get_task(sub_task_id)
+            if sub and sub.get("status") == "cancelled":
+                # The item's own service cancel path already finalized it.
+                results[item] = "cancelled"
+                print(f"[TASK:{summary_task_id}] ⊘ {item}: cancelled", flush=True)
+            elif ok:
                 results[item] = "ok"
             else:
                 results[item] = "failed"
-                sub = self.task_queue.get_task(sub_task_id)
                 reason = (sub or {}).get("error") or err or "operation returned failure"
                 err = reason
                 print(f"[TASK:{summary_task_id}] ✗ {item}: {reason}", flush=True)
@@ -104,16 +120,21 @@ class BulkService:
 
         succeeded = sum(1 for v in results.values() if v == "ok")
         skipped = sum(1 for v in results.values() if v == "skipped")
-        failed = n - succeeded - skipped
+        cancelled = sum(1 for v in results.values() if v == "cancelled")
+        failed = n - succeeded - skipped - cancelled
 
         print(f"[TASK:{summary_task_id}] ── Summary ──────────────────────", flush=True)
+        icons = {"ok": "✓", "skipped": "⏭", "cancelled": "⊘"}
         for item, result in results.items():
-            icon = "✓" if result == "ok" else ("⏭" if result == "skipped" else "✗")
+            icon = icons.get(result, "✗")
             print(f"[TASK:{summary_task_id}] {icon} {item}: {result}", flush=True)
-        print(f"[TASK:{summary_task_id}] {succeeded} succeeded · {skipped} skipped · {failed} failed", flush=True)
+        print(f"[TASK:{summary_task_id}] {succeeded} succeeded · {skipped} skipped · {cancelled} cancelled · {failed} failed", flush=True)
 
-        error = None if failed == 0 else f"{failed} of {n} item(s) failed"
-        self.task_queue.complete_task(summary_task_id, success=(failed == 0), error=error)
+        if self.task_queue.is_cancelled(summary_task_id):
+            self.task_queue.finalize_cancelled(summary_task_id)
+        else:
+            error = None if failed == 0 else f"{failed} of {n} item(s) failed"
+            self.task_queue.complete_task(summary_task_id, success=(failed == 0), error=error)
 
 
 # Global bulk service instance

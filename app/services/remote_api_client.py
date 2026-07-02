@@ -169,6 +169,15 @@ class RemoteApiClient:
         """
         return self._request("GET", f"/rsync/job/{job_id}/log?offset={int(offset)}")
 
+    def rsync_cancel(self, job_id: str) -> Dict[str, Any]:
+        """Stop a running pull job on this (destination) v-helper.
+
+        Used when a remote→remote migration is cancelled. Raises RemoteApiError
+        (with "404" in the message) against a v-helper too old to expose this
+        endpoint — callers treat that as best-effort and clean up locally.
+        """
+        return self._request("POST", f"/rsync/job/{job_id}/cancel")
+
 
 def client_for_pool(pool: Dict[str, Any]) -> Optional[RemoteApiClient]:
     """Return a RemoteApiClient if the pool has api_host/api_key, else None."""

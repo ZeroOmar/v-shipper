@@ -219,6 +219,14 @@ class SchedulerService:
         n = len(volumes)
         results = {}
         for i, vol in enumerate(volumes):
+            # Stop before starting the next volume if the run was cancelled.
+            if self._task_queue.is_cancelled(summary_task_id):
+                remaining = len(volumes) - i
+                print(f"[TASK:{summary_task_id}] Cancelled — {remaining} remaining volume(s) will not run", flush=True)
+                for vol_rem in volumes[i:]:
+                    results[f"{vol_rem['pool']}/{vol_rem['volume']}"] = 'cancelled'
+                break
+
             pool_name = vol['pool']
             vol_name = vol['volume']
             self._task_queue.update_progress(summary_task_id, {
@@ -249,12 +257,15 @@ class SchedulerService:
                     print(f"[TASK:{summary_task_id}] ✗ Failed {pool_name}/{vol_name}: {e}", flush=True)
                     ok = False
 
-                if ok:
+                sub_task = self._task_queue.get_task(sub_task_id)
+                if sub_task and sub_task.get('status') == 'cancelled':
+                    results[f"{pool_name}/{vol_name}"] = 'cancelled'
+                    print(f"[TASK:{summary_task_id}] ⊘ Cancelled {pool_name}/{vol_name}", flush=True)
+                elif ok:
                     results[f"{pool_name}/{vol_name}"] = 'ok'
                     self._apply_retention(job, vol, summary_task_id)
                 else:
                     results[f"{pool_name}/{vol_name}"] = 'failed'
-                    sub_task = self._task_queue.get_task(sub_task_id)
                     reason = (sub_task or {}).get('error') or 'backup returned failure'
                     print(f"[TASK:{summary_task_id}] ✗ Failed {pool_name}/{vol_name}: {reason}", flush=True)
 
@@ -264,16 +275,21 @@ class SchedulerService:
 
         succeeded = sum(1 for v in results.values() if v == 'ok')
         skipped = sum(1 for v in results.values() if v == 'skipped')
-        failed = n - succeeded - skipped
+        cancelled = sum(1 for v in results.values() if v == 'cancelled')
+        failed = n - succeeded - skipped - cancelled
 
         print(f"[TASK:{summary_task_id}] ── Summary ──────────────────────", flush=True)
+        icons = {'ok': '✓', 'skipped': '⏭', 'cancelled': '⊘'}
         for vol_key, result in results.items():
-            icon = '✓' if result == 'ok' else ('⏭' if result == 'skipped' else '✗')
+            icon = icons.get(result, '✗')
             print(f"[TASK:{summary_task_id}] {icon} {vol_key}: {result}", flush=True)
-        print(f"[TASK:{summary_task_id}] {succeeded} succeeded · {skipped} skipped · {failed} failed", flush=True)
+        print(f"[TASK:{summary_task_id}] {succeeded} succeeded · {skipped} skipped · {cancelled} cancelled · {failed} failed", flush=True)
 
-        error = f"{failed} volume(s) failed" if failed else None
-        self._task_queue.complete_task(summary_task_id, success=(failed == 0), error=error)
+        if self._task_queue.is_cancelled(summary_task_id):
+            self._task_queue.finalize_cancelled(summary_task_id)
+        else:
+            error = f"{failed} volume(s) failed" if failed else None
+            self._task_queue.complete_task(summary_task_id, success=(failed == 0), error=error)
 
     def _apply_retention(self, job: dict, vol: dict, task_id: Optional[str] = None) -> None:
         def log(msg: str) -> None:
