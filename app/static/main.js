@@ -439,8 +439,8 @@ function displayVolumes(poolName, volumes, warnings = []) {
                     <div class="volume-actions">
                         <button class="btn vol-btn" title="Migrate" aria-label="Migrate" data-action="open-migrate" ${volAttrs}>🚚</button>
                         <button class="btn vol-btn" title="Backup" aria-label="Backup" data-action="open-backup" ${volAttrs}>💾</button>
-                        ${isLocalDocker ? `<button class="btn tonal vol-btn" title="Rename" aria-label="Rename" data-action="open-rename" ${volAttrs}>✏️</button>` : ''}
-                        ${isLocalDocker ? `<button class="btn tonal vol-btn" title="Permissions" aria-label="Permissions" data-action="open-permissions" ${volAttrs}>🔑</button>` : ''}
+                        ${isLocalDocker ? `<button class="btn vol-btn" title="Rename" aria-label="Rename" data-action="open-rename" ${volAttrs}>✏️</button>` : ''}
+                        ${isLocalDocker ? `<button class="btn vol-btn" title="Permissions" aria-label="Permissions" data-action="open-permissions" ${volAttrs}>🔑</button>` : ''}
                         <button class="btn danger vol-btn" title="Delete" aria-label="Delete" data-action="open-delete" ${volAttrs}>🗑️</button>
                     </div>
                 </div>
@@ -650,7 +650,7 @@ function updateBulkToolbar() {
            <button class="btn danger vol-btn" data-action="bulk-open-delete">🗑️ Delete</button>`
         : `<button class="btn vol-btn" data-action="bulk-open-backup">💾 Backup</button>
            <button class="btn vol-btn" data-action="bulk-open-migrate">🚚 Migrate</button>
-           ${isLocalDocker ? `<button class="btn tonal vol-btn" data-action="bulk-open-permissions">🔑 Permissions</button>` : ''}
+           ${isLocalDocker ? `<button class="btn vol-btn" data-action="bulk-open-permissions">🔑 Permissions</button>` : ''}
            <button class="btn danger vol-btn" data-action="bulk-open-delete">🗑️ Delete</button>`;
 
     bar.style.display = '';
@@ -686,6 +686,19 @@ document.addEventListener('change', (e) => {
     if (row) row.classList.toggle('bulk-selected', cb.checked);
     updateBulkToolbar();
 });
+
+// Toggle selection for a whole volume/backup row (clicking anywhere on the box).
+// Mirrors the checkbox change handler; used by the delegated row-click below.
+function toggleBulkRow(row) {
+    const cb = row.querySelector('.bulk-check');
+    if (!cb) return;
+    const name = cb.dataset.vol || cb.dataset.file;
+    if (!name) return;
+    cb.checked = !cb.checked;   // programmatic — does not fire 'change', so update state here
+    if (cb.checked) bulkSelection.add(name); else bulkSelection.delete(name);
+    row.classList.toggle('bulk-selected', cb.checked);
+    updateBulkToolbar();
+}
 
 // Scrollable read-only list of the selected items, shown in place of the single
 // "Source Volume" / "Volume" / "Backup File" field.
@@ -2373,7 +2386,7 @@ async function openNotificationForm(cfgId = null) {
                 <input type="text" id="nfChatId" value="${escapeHtml(cfg?.chat_id || '')}" maxlength="64" pattern="-?\\d+|@\\w{4,}" title="A numeric chat id (optionally negative) or @username" placeholder="-1001234567890">
                 <span class="field-hint">Your chat or group ID. Use @userinfobot to find it.</span>
             </label>
-            <label>Message Thread ID <span style="font-weight:400;font-size:11px;color:var(--md-on-surface-variant)">(optional — for topic groups)</span>
+            <label>Message Thread ID <span style="font-weight:400;font-size:11px;color:var(--ink-subtle)">(optional — for topic groups)</span>
                 <input type="text" id="nfThreadId" value="${escapeHtml(cfg?.message_thread_id || '')}" inputmode="numeric" pattern="\\d*" maxlength="32" title="Numeric thread id" placeholder="">
             </label>
             <label>Notification Topics
@@ -2383,10 +2396,10 @@ async function openNotificationForm(cfgId = null) {
                 <input type="checkbox" id="nfFailureOnly" ${cfg?.on_failure_only ? 'checked' : ''} style="width:15px;height:15px;">
                 <span>Notify on failed tasks only</span>
             </label>
-            <label>Server URL <span style="font-weight:400;font-size:11px;color:var(--md-on-surface-variant)">(optional — for self-hosted Bot API)</span>
+            <label>Server URL <span style="font-weight:400;font-size:11px;color:var(--ink-subtle)">(optional — for self-hosted Bot API)</span>
                 <input type="url" id="nfServerUrl" value="${escapeHtml(cfg?.server_url || '')}" maxlength="4096" placeholder="https://api.telegram.org">
             </label>
-            <label>Message Template <span style="font-weight:400;font-size:11px;color:var(--md-on-surface-variant)">(optional — leave blank for default)</span>
+            <label>Message Template <span style="font-weight:400;font-size:11px;color:var(--ink-subtle)">(optional — leave blank for default)</span>
                 <textarea id="nfTemplate" maxlength="4096" placeholder="${escapeHtml(NOTIFICATION_DEFAULT_TEMPLATE)}">${escapeHtml(cfg?.message_template || '')}</textarea>
                 <span class="field-hint">Variables: {task_type_label} {task_type} {status} {status_emoji} {target} {params_block} {elapsed} {started_at} {timestamp} {current_operation} {error} {error_block} {task_id} {hostname} — and individual param aliases: {volume} {pool} {source_volume} {source_pool} {dest_volume} {dest_pool} {backup_pool} {backup_file} {job_name}</span>
             </label>
@@ -2915,9 +2928,17 @@ document.addEventListener('click', (e) => {
     document.querySelectorAll('.container-badge.pinned').forEach(b => {
         if (!b.contains(e.target)) { b.classList.remove('pinned'); hideContainerTip(b); }
     });
-    if (!el) return;
-    const handler = ACTION_HANDLERS[el.dataset.action];
-    if (handler) handler(el.dataset, el);
+    if (el) {
+        const handler = ACTION_HANDLERS[el.dataset.action];
+        if (handler) handler(el.dataset, el);
+        return;
+    }
+    // No action target: a click anywhere on a volume/backup row toggles its bulk
+    // selection. Skip the checkbox (its own change handler runs) and any other
+    // interactive control inside the row.
+    if (e.target.closest('.bulk-check, input, label, a, button, select, textarea')) return;
+    const row = e.target.closest('.volume-item, .backup-item');
+    if (row) toggleBulkRow(row);
 });
 
 // Container badge tooltip: show on hover/focus, pin open on click/tap (for touch).
