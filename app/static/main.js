@@ -843,13 +843,15 @@ function startBulkPermissions() {
 function openBulkDeleteModal() {
     if (!bulkSelection.size) return;
     const pool = activePool;
+    // Backups are plain archive files — no containers to stop — so skip the container control there.
+    const isBackupView = (poolsCache[activePool] || {}).role === 'backup';
     document.getElementById('deleteModal').querySelector('.modal-content').innerHTML = `
         <div class="modal-header"><h3>Bulk Delete</h3><button class="close-btn" onclick="closeModal('deleteModal')">×</button></div>
         <p><strong>Warning:</strong> This permanently deletes every selected item. This cannot be undone.</p>
         <div class="form-group"><label>Pool</label><input type="text" value="${escapeHtml(pool)}" disabled></div>
         ${bulkItemsListHtml('Items')}
         <label class="checkbox-label"><input type="checkbox" id="bulkDeleteConfirm"><span>Yes, delete the ${bulkSelection.size} selected item(s)</span></label>
-        ${bulkContainerControlHtml({ start: false })}
+        ${isBackupView ? '' : bulkContainerControlHtml({ start: false })}
         <button class="btn danger" style="width:100%; margin-top:15px;" data-action="confirm-bulk-delete">Delete</button>`;
     openModal('deleteModal');
 }
