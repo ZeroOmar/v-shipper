@@ -2,7 +2,8 @@
 
 Docker volume migration and backup tool with a web UI. Stateless, containerized, Alpine-based.
 
-<p align="center"> <img src="images/SCR-20260621-taaa.png" alt="Project Screenshot" width="100%"> </p>
+<p align="center"> <img src="images/screenshot-dark.png" alt="Project Screenshot" width="100%"> </p>
+<p align="center"> <img src="images/screenshot-light.png" alt="Project Screenshot" width="100%"> </p>
 
 ## Features
 
