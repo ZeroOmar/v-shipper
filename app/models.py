@@ -11,6 +11,9 @@ from app.validation import (
     validate_pool_path,
     validate_mode,
     validate_owner_token,
+    validate_explorer_mode,
+    validate_entry_name,
+    validate_rel_path,
     validate_cron,
     validate_telegram_token,
     validate_chat_id,
@@ -310,6 +313,118 @@ class PermissionsRequest(BaseModel):
         if not self.mode and self.owner is None:
             raise ValueError("at least a mode or an owner/group change is required")
         return self
+
+
+# ── File explorer (paths are *volume-relative*; see file_explorer_service) ────
+
+MAX_EXPLORER_ITEMS = 500
+
+
+class _FileBase(BaseModel):
+    pool: str
+    volume: str
+
+    @field_validator("pool", "volume")
+    @classmethod
+    def _validate_pool_volume(cls, v, info):
+        return validate_name(v, info.field_name)
+
+
+class FileMkdirRequest(_FileBase):
+    parent: str = ""
+    name: str
+
+    @field_validator("parent")
+    @classmethod
+    def _validate_parent(cls, v):
+        return validate_rel_path(v, "parent")
+
+    @field_validator("name")
+    @classmethod
+    def _validate_entry(cls, v):
+        return validate_entry_name(v, "name")
+
+
+class FileRenameRequest(_FileBase):
+    path: str
+    new_name: str
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, v):
+        v = validate_rel_path(v, "path")
+        if not v:
+            raise ValueError("path must not be the volume root")
+        return v
+
+    @field_validator("new_name")
+    @classmethod
+    def _validate_entry(cls, v):
+        return validate_entry_name(v, "new_name")
+
+
+class FilePermissionsRequest(_FileBase):
+    path: str = ""
+    mode: Optional[str] = None
+    owner: Optional[str] = None
+    group: Optional[str] = None
+    recursive: bool = False
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, v):
+        return validate_rel_path(v, "path")
+
+    @field_validator("mode")
+    @classmethod
+    def _validate_mode(cls, v):
+        return v if v is None else validate_explorer_mode(v, "mode")
+
+    @field_validator("owner", "group")
+    @classmethod
+    def _validate_owner(cls, v, info):
+        return v if v is None else validate_owner_token(v, info.field_name)
+
+    @model_validator(mode="after")
+    def _require_change(self):
+        if (self.owner is None) != (self.group is None):
+            raise ValueError("owner and group must be provided together")
+        if not self.mode and self.owner is None:
+            raise ValueError("at least a mode or an owner/group change is required")
+        return self
+
+
+class _FileItemsBase(_FileBase):
+    """A selection of entries that all live in one folder (``parent``) — so
+    items can never nest inside each other."""
+    parent: str = ""
+    names: List[str] = Field(..., min_length=1, max_length=MAX_EXPLORER_ITEMS)
+
+    @field_validator("parent")
+    @classmethod
+    def _validate_parent(cls, v):
+        return validate_rel_path(v, "parent")
+
+    @field_validator("names")
+    @classmethod
+    def _validate_names(cls, v):
+        v = [validate_entry_name(n, "names") for n in v]
+        if len(set(v)) != len(v):
+            raise ValueError("names must not contain duplicates")
+        return v
+
+
+class FileTransferRequest(_FileItemsBase):
+    dest_dir: str = ""
+
+    @field_validator("dest_dir")
+    @classmethod
+    def _validate_dest(cls, v):
+        return validate_rel_path(v, "dest_dir")
+
+
+class FileDeleteRequest(_FileItemsBase):
+    pass
 
 
 class RestoreRequest(BaseModel):

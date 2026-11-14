@@ -10,6 +10,7 @@ Docker volume migration and backup tool with a web UI. Stateless, containerized,
 - **Web UI** — responsive dashboard with login, pool browser, and task history
 - **Pool Management** — local pools and remote rsync daemon pools
 - **Volume Migration** — rsync-based with permission preservation and optional verify + delete-source; remote→remote supported via a destination v-helper pull
+- **File Explorer** — browse inside a local volume and copy, move, rename, delete, chmod/chown, or create folders. Symlinks are shown but never followed, and nothing outside the volume can be reached
 - **Volume Permissions** — view and change a volume's owner, group, and octal mode (`chmod -R` / `chown -R`) from the UI, on local and remote (v-helper) pools
 - **Container Awareness** — optional Docker socket integration shows which containers use each volume (with running/stopped status) and warns before migrating, renaming, or deleting a volume that's in use
 - **Backup / Restore** — tar.gz archives to local or remote rsync backup pools
@@ -170,6 +171,19 @@ All endpoints require authentication (session cookie set at login).
 | POST | `/api/backup` | Start backup to archive |
 | POST | `/api/restore` | Restore from archive |
 
+### File explorer (local pools)
+Paths are relative to the volume. Copy, move and delete are queued tasks.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/files?pool=&volume=&path=` | List one folder |
+| POST | `/api/files/mkdir` | Create a folder (`parent`, `name`) |
+| POST | `/api/files/rename` | Rename an entry (`path`, `new_name`) |
+| POST | `/api/files/permissions` | chmod/chown an entry (`path`, `mode`, `owner`+`group`, `recursive`) |
+| POST | `/api/files/copy` | Copy `names` from `parent` into `dest_dir` → task |
+| POST | `/api/files/move` | Move `names` from `parent` into `dest_dir` → task |
+| POST | `/api/files/delete` | Delete `names` from `parent` → task |
+
 ### Tasks
 | Method | Path | Description |
 |---|---|---|
@@ -239,6 +253,7 @@ v-shipper/
 │   │   └── routes.py       # All REST endpoints
 │   └── services/
 │       ├── volume_service.py      # Volume discovery, stats, rename/delete
+│       ├── file_explorer_service.py # Files inside a volume (fd-pinned, symlink-safe)
 │       ├── migration_service.py   # rsync orchestration, lockfiles
 │       ├── backup_service.py      # tar archiving, remote restore staging
 │       ├── scheduler_service.py   # APScheduler-backed cron backup jobs
@@ -250,6 +265,7 @@ v-shipper/
 ├── app/static/
 │   ├── main.js             # All client-side logic
 │   └── style.css
+├── tests/                  # pytest (pip install -r requirements-dev.txt)
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt

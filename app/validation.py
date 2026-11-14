@@ -128,6 +128,70 @@ def validate_owner_token(value: str, field: str = "owner") -> str:
     return value
 
 
+def validate_explorer_mode(value: str, field: str = "mode") -> str:
+    """Octal mode for the file explorer: like ``validate_mode`` but setuid/setgid
+    bits are refused (the sticky bit is allowed). v-shipper runs as root, so it
+    must not become a way to plant setuid binaries in volumes other containers run."""
+    value = validate_mode(value, field)
+    if int(value, 8) & 0o6000:
+        raise ValueError(f"{field} must not set the setuid/setgid bits")
+    return value
+
+
+# ── Volume contents (file explorer) ──────────────────────────────────────────
+
+MAX_ENTRY_NAME_BYTES = 255
+
+
+def validate_entry_name(value: str, field: str = "name") -> str:
+    """Validate one file/folder name *inside* a volume.
+
+    Looser than ``validate_name`` (real files have spaces, unicode, ``+`` …) but
+    always a single path segment: not empty, not ``.``/``..``, no ``/``, ``\\``,
+    NUL or control characters, at most 255 bytes of UTF-8. Not stripped — leading
+    or trailing spaces are part of a real filename.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    if not value:
+        raise ValueError(f"{field} must not be empty")
+    if value in (".", ".."):
+        raise ValueError(f"{field} must not be '.' or '..'")
+    if "/" in value or "\\" in value:
+        raise ValueError(f"{field} must not contain path separators")
+    if _CONTROL_CHARS_RE.search(value):
+        raise ValueError(f"{field} must not contain control characters")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(f"{field} must be valid UTF-8")
+    if len(encoded) > MAX_ENTRY_NAME_BYTES:
+        raise ValueError(f"{field} must be at most {MAX_ENTRY_NAME_BYTES} bytes")
+    return value
+
+
+def validate_rel_path(value: Optional[str], field: str = "path") -> str:
+    """Validate a path *relative to a volume root*; returns it normalised.
+
+    ``""`` (or ``None``) means the volume root. Empty segments are dropped (so
+    ``a//b/`` → ``a/b``) and every remaining segment must pass
+    ``validate_entry_name`` — so absolute paths, ``..`` and ``.`` can never
+    survive. A leading ``/`` is rejected rather than silently stripped.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    if value.startswith("/"):
+        raise ValueError(f"{field} must be relative to the volume")
+    if len(value) > MAX_PATH_LEN:
+        raise ValueError(f"{field} must be at most {MAX_PATH_LEN} characters")
+    parts = [p for p in value.split("/") if p != ""]
+    for part in parts:
+        validate_entry_name(part, field)
+    return "/".join(parts)
+
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 def validate_pool_path(value: str, field: str = "path") -> str:

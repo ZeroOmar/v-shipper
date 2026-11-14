@@ -131,6 +131,22 @@
         </div>
     </div>
 
+    <!-- File Explorer Modal (content rendered by main.js) -->
+    <div id="fileExplorerModal" class="modal">
+        <div class="modal-content modal-xl">
+            <div class="modal-header">
+                <h3 id="fileExplorerTitle">Files</h3>
+                <button class="close-btn" onclick="closeExplorer()" aria-label="Close">×</button>
+            </div>
+            <div id="fileExplorerBody" class="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- File Explorer Dialog — stacked above the explorer for prompts / folder picker -->
+    <div id="fileExplorerDialog" class="modal modal-stacked">
+        <div class="modal-content"></div>
+    </div>
+
     <!-- Task Detail Modal -->
     <div id="taskDetailModal" class="modal">
         <div class="modal-content modal-lg">

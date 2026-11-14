@@ -27,6 +27,7 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 | `app/models.py` | Pydantic request/response models |
 | `app/api/routes.py` | All REST endpoints |
 | `app/services/volume_service.py` | Volume discovery, disk stats, rename/delete, permissions (chmod/chown) |
+| `app/services/file_explorer_service.py` | File explorer *inside* a local volume — list/mkdir/rename/chmod/chown (immediate) and copy/move/delete (queued); fd-pinned, never follows symlinks |
 | `app/services/docker_service.py` | Docker socket client — maps volumes to the containers using them; stops/starts containers (local) |
 | `app/services/container_control.py` | Stop/start the containers using a volume around an operation — dispatches local (docker_service) vs remote (v-helper API) |
 | `app/services/remote_api_client.py` | HTTP client for the v-helper control API (fs/docker control + rsync-pull job start/poll) |
@@ -64,6 +65,7 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 ## Input validation & safety
 
 - **All inputs validated at the boundary** — request models, path/query params, and `VOLUME_MANAGER_CONFIG` (at startup) go through `app/validation.py`. Names are strict Docker-style (`[A-Za-z0-9][A-Za-z0-9_.-]`, ≤255, no `/` or `..`)
+- **Volume contents (file explorer)** — paths *inside* a volume are validated with `validate_rel_path` / `validate_entry_name`, then resolved one component at a time through `O_DIRECTORY|O_NOFOLLOW` fds and acted on with `dir_fd=` syscalls. Never `safe_join` + path-based calls or subprocesses here: volume contents are written by other containers and could swap in a symlink between a check and its use (TOCTOU). Symlinks are listed but never traversed. chmod/chown skip hard-linked files and device nodes. Explorer modes refuse setuid/setgid. Explorer POSTs require `Content-Type: application/json`. Tests: `tests/test_file_explorer_security.py`
 - **Path containment** — `safe_join(base, *parts)` resolves and asserts the result stays inside `base`; use it instead of f-string path building
 - **Errors never crash the app** — global handlers in `app.py` return generic 500s (no traceback leak) and concise 422s; background-thread work is wrapped so a bad input marks the task failed
 - **Frontend** — user-controlled strings are HTML-escaped and actions dispatched via `data-action` attributes, not interpolated `onclick`
@@ -101,5 +103,5 @@ web_ui:
 ## Known issues / vibe-code debt
 
 - Frontend JS in `main.js` is long and procedural — no modules, no component abstraction
-- No tests exist despite `tests/` stubs referenced in older docs
+- Only the file explorer has tests (`venv/bin/python -m pytest tests`, deps in `requirements-dev.txt`); the rest of the app is untested
 - Per-task log buffer is in-memory only — logs are lost on server restart

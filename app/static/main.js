@@ -394,6 +394,8 @@ function displayVolumes(poolName, volumes, warnings = []) {
     const poolMeta = poolsCache[poolName] || {};
     const poolRole = poolMeta.role || 'docker';
     const isLocalDocker = poolRole !== 'backup' && (poolMeta.pool_type !== 'remote' || poolMeta.has_helper);
+    // File explorer is local-only (remote pools would need path-aware v-helper endpoints).
+    const isLocalPool = poolRole !== 'backup' && poolMeta.pool_type !== 'remote';
     const container = document.getElementById('volumesContainer');
 
     // Backup pools get a grouped archive view
@@ -441,6 +443,7 @@ function displayVolumes(poolName, volumes, warnings = []) {
                         <button class="btn vol-btn" title="Backup" aria-label="Backup" data-action="open-backup" ${volAttrs}>💾</button>
                         ${isLocalDocker ? `<button class="btn vol-btn" title="Rename" aria-label="Rename" data-action="open-rename" ${volAttrs}>✏️</button>` : ''}
                         ${isLocalDocker ? `<button class="btn vol-btn" title="Permissions" aria-label="Permissions" data-action="open-permissions" ${volAttrs}>🔑</button>` : ''}
+                        ${isLocalPool ? `<button class="btn vol-btn" title="Explore files" aria-label="Explore files" data-action="open-explorer" ${volAttrs}>📁</button>` : ''}
                         <button class="btn danger vol-btn" title="Delete" aria-label="Delete" data-action="open-delete" ${volAttrs}>🗑️</button>
                     </div>
                 </div>
@@ -1740,6 +1743,9 @@ function getTaskTypeDisplay(type) {
         bulk_delete: 'Bulk Delete',
         bulk_permissions: 'Bulk Permissions',
         bulk_restore: 'Bulk Restore',
+        file_copy: 'Copy Files',
+        file_move: 'Move Files',
+        file_delete: 'Delete Files',
     };
     return map[type] || (type ? type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Task');
 }
@@ -2866,6 +2872,444 @@ function createToast(message, type) {
     }, 5000);
 }
 
+// ── File Explorer ─────────────────────────────────────────────────────────────
+// Browse and manage the files inside a local volume. All paths sent to the API
+// are volume-relative; the server resolves them through O_NOFOLLOW directory
+// fds (see file_explorer_service.py), so the UI never builds host paths.
+// mkdir / rename / permissions are immediate; copy / move / delete are queued
+// tasks tracked in the explorer footer.
+
+const explorer = {
+    pool: null,
+    volume: null,
+    path: '',
+    entries: [],
+    locked: false,
+    truncated: false,
+    selection: new Set(),
+    picker: null,          // { op, path, dirs } while the copy/move destination picker is open
+    tasks: new Map(),      // task_id -> { label, percent, volume }
+    pollTimer: null,
+};
+
+function fxJoin(...parts) {
+    return parts.filter(Boolean).join('/');
+}
+
+function fxEntry(name) {
+    return explorer.entries.find(e => e.name === name);
+}
+
+function fxFormatSize(bytes) {
+    if (bytes == null) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let v = bytes / 1024, i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
+}
+
+async function fxFetchJson(url, options) {
+    const res = await fetch(url, options);
+    let data = {};
+    try { data = await res.json(); } catch (_) { /* non-JSON error body */ }
+    if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
+    return data;
+}
+
+function fxPost(endpoint, body) {
+    return fxFetchJson(`${API_BASE}/files/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({ pool: explorer.pool, volume: explorer.volume }, body)),
+    });
+}
+
+function fxListUrl(path) {
+    return `${API_BASE}/files?pool=${encodeURIComponent(explorer.pool)}&volume=${encodeURIComponent(explorer.volume)}&path=${encodeURIComponent(path)}`;
+}
+
+function openExplorer(pool, volume) {
+    explorer.pool = pool;
+    explorer.volume = volume;
+    explorer.path = '';
+    explorer.entries = [];
+    explorer.selection.clear();
+    document.getElementById('fileExplorerTitle').textContent = `Files — ${volume}`;
+    openModal('fileExplorerModal');
+    loadExplorer('');
+}
+
+function closeExplorer() {
+    closeFxDialog();
+    closeModal('fileExplorerModal');
+}
+
+async function loadExplorer(path) {
+    const body = document.getElementById('fileExplorerBody');
+    if (!explorer.entries.length) body.innerHTML = '<div class="placeholder-text">Loading…</div>';
+    try {
+        const data = await fxFetchJson(fxListUrl(path));
+        explorer.path = data.path;
+        explorer.entries = data.entries;
+        explorer.locked = data.locked;
+        explorer.truncated = data.truncated;
+        explorer.selection.clear();
+        renderExplorer();
+    } catch (e) {
+        if (explorer.path === path || !explorer.entries.length) {
+            body.innerHTML = `<div class="error-message">${escapeHtml(e.message)}</div>
+                <button class="btn tonal" data-action="fx-nav" data-path="">Back to volume root</button>`;
+        } else {
+            showError(e.message);
+        }
+    }
+}
+
+function fxBreadcrumbHtml(path, action) {
+    const parts = path ? path.split('/') : [];
+    let html = `<a class="fx-crumb" data-action="${action}" data-path="">${escapeHtml(explorer.volume)}</a>`;
+    parts.forEach((part, i) => {
+        const p = parts.slice(0, i + 1).join('/');
+        html += `<span class="fx-crumb-sep">/</span><a class="fx-crumb" data-action="${action}" data-path="${escapeHtml(p)}">${escapeHtml(part)}</a>`;
+    });
+    return `<div class="fx-breadcrumb">${html}</div>`;
+}
+
+function fxIcon(entry) {
+    return { dir: '📁', file: '📄', symlink: '🔗', other: '⚙️' }[entry.type] || '📄';
+}
+
+function renderExplorer() {
+    const sel = explorer.selection.size;
+    const single = sel === 1 ? fxEntry([...explorer.selection][0]) : null;
+    const busy = explorer.locked;
+    const dis = (cond) => (cond ? '' : ' disabled');
+
+    let html = fxBreadcrumbHtml(explorer.path, 'fx-nav');
+    html += `<div class="fx-toolbar">
+        <button class="btn tonal" data-action="fx-new-folder"${dis(!busy)}>+ New folder</button>
+        <button class="btn tonal" data-action="fx-transfer" data-op="copy"${dis(sel)}>Copy</button>
+        <button class="btn tonal" data-action="fx-transfer" data-op="move"${dis(sel)}>Move</button>
+        <button class="btn tonal" data-action="fx-rename"${dis(single && !busy)}>Rename</button>
+        <button class="btn tonal" data-action="fx-perms"${dis(single && single.type !== 'symlink' && single.type !== 'other' && !busy)}>Permissions</button>
+        <button class="btn danger" data-action="fx-delete"${dis(sel)}>Delete</button>
+        <span class="fx-toolbar-spacer"></span>
+        <button class="btn tonal" data-action="fx-refresh" title="Refresh" aria-label="Refresh">⟳</button>
+    </div>`;
+
+    if (busy) {
+        html += '<div class="warning-banner">A task is running on this volume — rename, new folder and permission changes are disabled until it finishes.</div>';
+    }
+    if (explorer.truncated) {
+        html += `<div class="warning-banner">This folder has more entries than can be shown; only the first ${explorer.entries.length} are listed.</div>`;
+    }
+
+    if (!explorer.entries.length) {
+        html += '<div class="placeholder-text">This folder is empty</div>';
+    } else {
+        const selectable = explorer.entries.filter(e => e.valid_name);
+        const allSelected = selectable.length > 0 && selectable.every(e => explorer.selection.has(e.name));
+        html += `<div class="fx-table-wrap"><table class="fx-table">
+            <thead><tr>
+                <th class="fx-col-check"><input type="checkbox" class="fx-check-all" aria-label="Select all"${allSelected ? ' checked' : ''}></th>
+                <th>Name</th><th class="fx-col-num">Size</th><th>Modified</th><th>Mode</th><th>Owner</th>
+            </tr></thead><tbody>`;
+        explorer.entries.forEach(e => {
+            const checked = explorer.selection.has(e.name);
+            const nameAttr = `data-name="${escapeHtml(e.name)}"`;
+            let nameCell;
+            if (!e.valid_name) {
+                nameCell = `<span class="fx-invalid" title="This name is not valid UTF-8 and can't be managed here">${escapeHtml(e.name)}</span>`;
+            } else if (e.type === 'dir') {
+                nameCell = `<a class="fx-link" data-action="fx-open" ${nameAttr}>${escapeHtml(e.name)}</a>`;
+            } else if (e.type === 'symlink') {
+                nameCell = `${escapeHtml(e.name)} <span class="fx-link-target" title="Symlinks are shown but never followed">→ ${escapeHtml(e.link_target || '?')}</span>`;
+            } else {
+                nameCell = escapeHtml(e.name);
+            }
+            const hardlink = e.type === 'file' && e.nlink > 1
+                ? ' <span class="fx-badge" title="Multiple hard links — permissions are not changed on this file">hard link</span>' : '';
+            html += `<tr class="fx-row${checked ? ' selected' : ''}" ${nameAttr}>
+                <td class="fx-col-check"><input type="checkbox" class="fx-check" ${nameAttr} aria-label="Select ${escapeHtml(e.name)}"${checked ? ' checked' : ''}${e.valid_name ? '' : ' disabled'}></td>
+                <td class="fx-name"><span class="fx-icon">${fxIcon(e)}</span>${nameCell}${hardlink}</td>
+                <td class="fx-col-num">${escapeHtml(fxFormatSize(e.size))}</td>
+                <td>${escapeHtml(formatDateTime(e.mtime))}</td>
+                <td class="fx-mono">${escapeHtml(e.mode)}</td>
+                <td class="fx-mono">${escapeHtml(e.user)}:${escapeHtml(e.group)}</td>
+            </tr>`;
+        });
+        html += '</tbody></table></div>';
+    }
+
+    html += '<div id="fxTasks" class="fx-tasks"></div>';
+    document.getElementById('fileExplorerBody').innerHTML = html;
+    renderFxTasks();
+}
+
+function fxToggle(name, on) {
+    const entry = fxEntry(name);
+    if (!entry || !entry.valid_name) return;
+    if (on) explorer.selection.add(name); else explorer.selection.delete(name);
+    renderExplorer();
+}
+
+// ── Dialog (stacked over the explorer) ───────────────────────────────────────
+
+function openFxDialog(title, bodyHtml) {
+    const modal = document.getElementById('fileExplorerDialog');
+    modal.querySelector('.modal-content').innerHTML = `
+        <div class="modal-header">
+            <h3>${escapeHtml(title)}</h3>
+            <button class="close-btn" data-action="fx-dialog-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">${bodyHtml}</div>`;
+    openModal('fileExplorerDialog');
+    const first = modal.querySelector('input[type="text"]');
+    if (first) { first.focus(); first.select(); }
+}
+
+function closeFxDialog() {
+    explorer.picker = null;
+    closeModal('fileExplorerDialog');
+}
+
+function fxNewFolder() {
+    openFxDialog('New folder', `
+        <div class="form-group">
+            <label for="fxName">Folder name</label>
+            <input type="text" id="fxName" maxlength="255" autocomplete="off">
+        </div>
+        <button class="btn success fx-primary" style="width:100%;" data-action="fx-do-mkdir">Create</button>`);
+}
+
+async function fxDoMkdir() {
+    const name = document.getElementById('fxName')?.value || '';
+    if (!name.trim()) { showError('Folder name is required'); return; }
+    try {
+        await fxPost('mkdir', { parent: explorer.path, name });
+        closeFxDialog();
+        showSuccess(`Created folder "${name}"`);
+        loadExplorer(explorer.path);
+    } catch (e) { showError(e.message); }
+}
+
+function fxRename() {
+    const name = [...explorer.selection][0];
+    if (!name) return;
+    openFxDialog('Rename', `
+        <div class="form-group">
+            <label for="fxName">New name</label>
+            <input type="text" id="fxName" maxlength="255" autocomplete="off" value="${escapeHtml(name)}">
+        </div>
+        <button class="btn success fx-primary" style="width:100%;" data-action="fx-do-rename" data-name="${escapeHtml(name)}">Rename</button>`);
+}
+
+async function fxDoRename(oldName) {
+    const newName = document.getElementById('fxName')?.value || '';
+    if (!newName.trim()) { showError('Name is required'); return; }
+    if (newName === oldName) { closeFxDialog(); return; }
+    try {
+        await fxPost('rename', { path: fxJoin(explorer.path, oldName), new_name: newName });
+        closeFxDialog();
+        showSuccess(`Renamed to "${newName}"`);
+        loadExplorer(explorer.path);
+    } catch (e) { showError(e.message); }
+}
+
+function fxPerms() {
+    const entry = fxEntry([...explorer.selection][0]);
+    if (!entry) return;
+    const isDir = entry.type === 'dir';
+    openFxDialog('Permissions', `
+        <p class="fx-dialog-target">${fxIcon(entry)} ${escapeHtml(entry.name)}</p>
+        <div class="form-group">
+            <label for="fxUser">User / UID</label>
+            <input type="text" id="fxUser" maxlength="32" autocomplete="off" value="${escapeHtml(entry.user)}" data-orig="${escapeHtml(entry.user)}">
+        </div>
+        <div class="form-group">
+            <label for="fxGroup">Group / GID</label>
+            <input type="text" id="fxGroup" maxlength="32" autocomplete="off" value="${escapeHtml(entry.group)}" data-orig="${escapeHtml(entry.group)}">
+        </div>
+        <div class="form-group">
+            <label for="fxMode">Permission (octal)</label>
+            <input type="text" id="fxMode" maxlength="4" autocomplete="off" value="${escapeHtml(entry.mode)}" data-orig="${escapeHtml(entry.mode)}" pattern="[0-7]{3,4}" title="Octal mode, e.g. 755">
+        </div>
+        ${isDir ? `<div class="form-group">
+            <label class="checkbox-label"><input type="checkbox" id="fxRecursive"><span>Apply recursively to everything inside</span></label>
+        </div>` : ''}
+        <p class="hint fx-hint">Symlinks are never followed. Files with multiple hard links, device/FIFO/socket entries, and setuid/setgid modes are refused or skipped.</p>
+        <button class="btn success fx-primary" style="width:100%;" data-action="fx-do-perms" data-name="${escapeHtml(entry.name)}">Apply</button>`);
+}
+
+async function fxDoPerms(name) {
+    const val = (id) => document.getElementById(id);
+    const user = val('fxUser').value.trim();
+    const group = val('fxGroup').value.trim();
+    const mode = val('fxMode').value.trim();
+    const recursive = !!val('fxRecursive')?.checked;
+    const body = { path: fxJoin(explorer.path, name), recursive };
+    // Like the volume-level modal: only changed fields are applied, unless
+    // recursive is ticked (then the fields are re-applied to the whole tree).
+    if (mode && (recursive || mode !== val('fxMode').dataset.orig)) body.mode = mode;
+    const ownerChanged = user !== val('fxUser').dataset.orig || group !== val('fxGroup').dataset.orig;
+    if ((user || group) && (recursive || ownerChanged)) {
+        if (!user || !group) { showError('User and Group are both required for an ownership change'); return; }
+        body.owner = user;
+        body.group = group;
+    }
+    if (!body.mode && !body.owner) { closeFxDialog(); return; }
+    try {
+        const r = await fxPost('permissions', body);
+        closeFxDialog();
+        const skipped = [];
+        if (r.skipped_hardlinks) skipped.push(`${r.skipped_hardlinks} hard-linked file(s)`);
+        if (r.skipped_special) skipped.push(`${r.skipped_special} special file(s)`);
+        if (r.errors && r.errors.length) showError(`Some entries failed: ${r.errors[0]}${r.errors.length > 1 ? ` (+${r.errors.length - 1} more)` : ''}`);
+        else showSuccess(`Permissions updated (${r.changed} entr${r.changed === 1 ? 'y' : 'ies'})${skipped.length ? ` — skipped ${skipped.join(', ')}` : ''}`);
+        loadExplorer(explorer.path);
+    } catch (e) { showError(e.message); }
+}
+
+function fxDelete() {
+    const names = [...explorer.selection];
+    if (!names.length) return;
+    const shown = names.slice(0, 10).map(n => `<li>${fxIcon(fxEntry(n) || {})} ${escapeHtml(n)}</li>`).join('');
+    const more = names.length > 10 ? `<li>…and ${names.length - 10} more</li>` : '';
+    openFxDialog('Delete', `
+        <p>Permanently delete ${names.length} item(s) from <strong>${escapeHtml(fxJoin(explorer.volume, explorer.path))}</strong>? Folders are deleted with everything inside. This cannot be undone.</p>
+        <ul class="fx-dialog-list">${shown}${more}</ul>
+        <button class="btn danger fx-primary" style="width:100%;" data-action="fx-do-delete">Delete</button>`);
+}
+
+async function fxDoDelete() {
+    const names = [...explorer.selection];
+    try {
+        const r = await fxPost('delete', { parent: explorer.path, names });
+        closeFxDialog();
+        fxTrackTask(r.task_id, `Deleting ${names.length} item(s)`);
+    } catch (e) { showError(e.message); }
+}
+
+// ── Copy / move destination picker ───────────────────────────────────────────
+
+function fxTransfer(op) {
+    if (!explorer.selection.size) return;
+    explorer.picker = { op, path: explorer.path, dirs: [] };
+    fxLoadPicker(explorer.path);
+}
+
+async function fxLoadPicker(path) {
+    if (!explorer.picker) return;
+    try {
+        const data = await fxFetchJson(fxListUrl(path));
+        if (!explorer.picker) return;
+        explorer.picker.path = data.path;
+        explorer.picker.dirs = data.entries.filter(e => e.type === 'dir' && e.valid_name);
+        fxRenderPicker();
+    } catch (e) { showError(e.message); }
+}
+
+function fxRenderPicker() {
+    const { op, path, dirs } = explorer.picker;
+    const n = explorer.selection.size;
+    // A folder can't be copied/moved into itself, so hide the selected folders
+    // while browsing their parent.
+    const hidden = path === explorer.path ? explorer.selection : new Set();
+    const rows = dirs.filter(d => !hidden.has(d.name)).map(d =>
+        `<li><a class="fx-link" data-action="fx-pick-nav" data-path="${escapeHtml(fxJoin(path, d.name))}">📁 ${escapeHtml(d.name)}</a></li>`).join('');
+    const verb = op === 'copy' ? 'Copy' : 'Move';
+    openFxDialog(`${verb} ${n} item(s) to…`, `
+        ${fxBreadcrumbHtml(path, 'fx-pick-nav')}
+        <ul class="fx-picker">${rows || '<li class="placeholder-text">No subfolders</li>'}</ul>
+        <button class="btn success fx-primary" style="width:100%;" data-action="fx-do-transfer">${verb} here</button>`);
+}
+
+async function fxDoTransfer() {
+    if (!explorer.picker) return;
+    const { op, path } = explorer.picker;
+    const names = [...explorer.selection];
+    try {
+        const r = await fxPost(op, { parent: explorer.path, names, dest_dir: path });
+        closeFxDialog();
+        const where = path ? `${explorer.volume}/${path}` : `${explorer.volume}/`;
+        fxTrackTask(r.task_id, `${op === 'copy' ? 'Copying' : 'Moving'} ${names.length} item(s) to ${where}`);
+    } catch (e) { showError(e.message); }
+}
+
+// ── Queued task tracking (footer) ────────────────────────────────────────────
+
+function fxTrackTask(taskId, label) {
+    explorer.tasks.set(taskId, { label, percent: 0, status: 'pending', volume: explorer.volume, pool: explorer.pool });
+    explorer.selection.clear();
+    renderExplorer();
+    if (!explorer.pollTimer) explorer.pollTimer = setInterval(fxPollTasks, 2000);
+    if (typeof loadTaskHistory === 'function') loadTaskHistory();
+}
+
+async function fxPollTasks() {
+    if (!explorer.tasks.size) {
+        clearInterval(explorer.pollTimer);
+        explorer.pollTimer = null;
+        return;
+    }
+    let refresh = false;
+    for (const [id, t] of [...explorer.tasks]) {
+        try {
+            const p = await fxFetchJson(`${API_BASE}/task/${encodeURIComponent(id)}/progress`);
+            t.percent = p.progress_percent || 0;
+            t.status = p.status;
+            if (['completed', 'failed', 'cancelled'].includes(p.status)) {
+                explorer.tasks.delete(id);
+                if (p.status === 'completed') showSuccess(`${t.label} — done`);
+                else if (p.status === 'cancelled') showError(`${t.label} — cancelled`);
+                else showError(`${t.label} — failed: ${p.error || 'unknown error'}`);
+                if (t.pool === explorer.pool && t.volume === explorer.volume) refresh = true;
+            }
+        } catch (_) { /* transient; retry next tick */ }
+    }
+    const open = document.getElementById('fileExplorerModal').classList.contains('active');
+    if (refresh && open) loadExplorer(explorer.path);
+    else renderFxTasks();
+    if (refresh && typeof loadTaskHistory === 'function') loadTaskHistory();
+}
+
+function renderFxTasks() {
+    const el = document.getElementById('fxTasks');
+    if (!el) return;
+    const mine = [...explorer.tasks].filter(([, t]) => t.pool === explorer.pool && t.volume === explorer.volume);
+    el.innerHTML = mine.map(([id, t]) => `
+        <div class="fx-task">
+            <span class="loading-spinner" style="width:12px;height:12px;border-width:2px;"></span>
+            <span>${escapeHtml(t.label)} · ${t.status === 'pending' ? 'queued' : `${t.percent}%`}</span>
+            <a class="fx-link" data-action="open-task-detail" data-id="${escapeHtml(id)}">view task</a>
+        </div>`).join('');
+}
+
+// Explorer checkboxes (delegated so they survive re-renders).
+document.addEventListener('change', (e) => {
+    if (e.target.classList.contains('fx-check')) {
+        fxToggle(e.target.dataset.name, e.target.checked);
+    } else if (e.target.classList.contains('fx-check-all')) {
+        explorer.selection.clear();
+        if (e.target.checked) explorer.entries.filter(x => x.valid_name).forEach(x => explorer.selection.add(x.name));
+        renderExplorer();
+    }
+});
+
+// Enter submits the open explorer dialog; Escape closes the top-most explorer layer.
+document.addEventListener('keydown', (e) => {
+    const dialog = document.getElementById('fileExplorerDialog');
+    const dialogOpen = dialog && dialog.classList.contains('active');
+    if (e.key === 'Enter' && dialogOpen && e.target.matches('#fileExplorerDialog input[type="text"]')) {
+        e.preventDefault();
+        dialog.querySelector('.fx-primary')?.click();
+    } else if (e.key === 'Escape') {
+        if (dialogOpen) closeFxDialog();
+        else if (document.getElementById('fileExplorerModal')?.classList.contains('active')) closeExplorer();
+    }
+});
+
 // Close modals / settings on background click
 // ── Delegated action dispatch ───────────────────────────────────────────────
 // Markup uses data-action + data-* attributes instead of inline onclick="fn('...')"
@@ -2879,6 +3323,22 @@ const ACTION_HANDLERS = {
     'open-rename':         (d) => openRenameVolumeModal(d.pool, d.vol),
     'open-permissions':    (d) => openPermissionsModal(d.pool, d.vol),
     'open-delete':         (d) => openDeleteModal(d.pool, d.vol),
+    'open-explorer':       (d) => openExplorer(d.pool, d.vol),
+    'fx-nav':              (d) => loadExplorer(d.path || ''),
+    'fx-open':             (d) => loadExplorer(fxJoin(explorer.path, d.name)),
+    'fx-refresh':          ()  => loadExplorer(explorer.path),
+    'fx-new-folder':       ()  => fxNewFolder(),
+    'fx-rename':           ()  => fxRename(),
+    'fx-perms':            ()  => fxPerms(),
+    'fx-delete':           ()  => fxDelete(),
+    'fx-transfer':         (d) => fxTransfer(d.op),
+    'fx-pick-nav':         (d) => fxLoadPicker(d.path || ''),
+    'fx-dialog-close':     ()  => closeFxDialog(),
+    'fx-do-mkdir':         ()  => fxDoMkdir(),
+    'fx-do-rename':        (d) => fxDoRename(d.name),
+    'fx-do-perms':         (d) => fxDoPerms(d.name),
+    'fx-do-delete':        ()  => fxDoDelete(),
+    'fx-do-transfer':      ()  => fxDoTransfer(),
     'open-restore':        (d) => openRestoreModal(d.pool, d.file),
     'create-volume':       (d) => createVolume(d.pool),
     'rename-volume':       (d) => renameVolume(d.pool, d.vol),
@@ -2939,6 +3399,8 @@ document.addEventListener('click', (e) => {
     // selection. Skip the checkbox (its own change handler runs) and any other
     // interactive control inside the row.
     if (e.target.closest('.bulk-check, input, label, a, button, select, textarea')) return;
+    const fxRow = e.target.closest('.fx-row');
+    if (fxRow) { fxToggle(fxRow.dataset.name, !explorer.selection.has(fxRow.dataset.name)); return; }
     const row = e.target.closest('.volume-item, .backup-item');
     if (row) toggleBulkRow(row);
 });
@@ -2969,6 +3431,10 @@ document.addEventListener('click', (e) => {
             closeTaskDetail();
         } else if (e.target.id === 'conflictModal') {
             abortConflict();
+        } else if (e.target.id === 'fileExplorerModal') {
+            closeExplorer();
+        } else if (e.target.id === 'fileExplorerDialog') {
+            closeFxDialog();
         } else {
             e.target.classList.remove('active');
         }

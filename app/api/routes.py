@@ -12,6 +12,7 @@ from app.models import (
     BackupSchedule, BackupScheduleCreate, SchedulesResponse, VolumeCreateRequest,
     NotificationConfig, NotificationCreate, NotificationsResponse,
     BulkBackupRequest, BulkMigrateRequest, BulkDeleteRequest, BulkPermissionsRequest, BulkRestoreRequest,
+    FileMkdirRequest, FileRenameRequest, FilePermissionsRequest, FileTransferRequest, FileDeleteRequest,
 )
 from app.services.volume_service import get_volume_service
 from app.services.docker_service import get_docker_service
@@ -22,8 +23,9 @@ from app.services.bulk_service import get_bulk_service
 from app.services.task_queue import get_task_queue
 from app.services.scheduler_service import get_scheduler_service
 from app.services.notification_service import get_notification_service
+from app.services.file_explorer_service import get_file_explorer_service, ExplorerError
 from app.config import validate_auth, get_config
-from app.validation import validate_name
+from app.validation import validate_name, validate_rel_path
 
 
 def _validate_param(value: str, field: str) -> str:
@@ -551,6 +553,120 @@ async def change_permissions(request: PermissionsRequest, session: dict = Depend
     except Exception as e:
         print(f"[ERROR] Permissions error: {e}", flush=True)
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── File explorer ─────────────────────────────────────────────────────────────
+# All paths are volume-relative and validated by the request models;
+# file_explorer_service resolves them through O_NOFOLLOW directory fds so
+# nothing outside the volume can be reached (see its module docstring).
+# Immediate endpoints are plain `def` so FastAPI runs the blocking filesystem
+# work in its threadpool instead of on the event loop.
+
+def _explorer():
+    return get_file_explorer_service(get_config())
+
+
+def _explorer_http(exc: ExplorerError) -> HTTPException:
+    return HTTPException(status_code=exc.status, detail=exc.message)
+
+
+def _require_json(request: Request) -> None:
+    """Refuse non-JSON bodies on explorer writes. FastAPI 0.104 parses a
+    ``text/plain`` body as JSON, which a cross-site <form> can send without a
+    CORS preflight; the SameSite=Lax session cookie already blocks that, this is
+    the second layer."""
+    ctype = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if ctype != "application/json":
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json")
+
+
+@router.get("/api/files")
+def list_files(pool: str, volume: str, path: str = "", session: dict = Depends(require_auth)):
+    """List one folder of a local volume."""
+    pool = _validate_param(pool, "pool")
+    volume = _validate_param(volume, "volume")
+    try:
+        path = validate_rel_path(path, "path")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        return _explorer().list_dir(pool, volume, path)
+    except ExplorerError as e:
+        raise _explorer_http(e)
+
+
+@router.post("/api/files/mkdir")
+def files_mkdir(request: FileMkdirRequest, session: dict = Depends(require_auth), _json: None = Depends(_require_json)):
+    try:
+        _explorer().mkdir(request.pool, request.volume, request.parent, request.name)
+        return {"ok": True}
+    except ExplorerError as e:
+        raise _explorer_http(e)
+
+
+@router.post("/api/files/rename")
+def files_rename(request: FileRenameRequest, session: dict = Depends(require_auth), _json: None = Depends(_require_json)):
+    try:
+        _explorer().rename(request.pool, request.volume, request.path, request.new_name)
+        return {"ok": True}
+    except ExplorerError as e:
+        raise _explorer_http(e)
+
+
+@router.post("/api/files/permissions")
+def files_permissions(request: FilePermissionsRequest, session: dict = Depends(require_auth), _json: None = Depends(_require_json)):
+    owner_spec = f"{request.owner}:{request.group}" if request.owner is not None else None
+    try:
+        result = _explorer().set_permissions(
+            request.pool, request.volume, request.path, request.mode, owner_spec, request.recursive)
+        return {"ok": not result["errors"], **result}
+    except ExplorerError as e:
+        raise _explorer_http(e)
+
+
+def _enqueue_file_task(task_type: str, request, runnable_factory) -> TaskResponse:
+    task_queue = get_task_queue()
+    params = {"pool": request.pool, "volume_name": request.volume,
+              "parent": request.parent, "names": request.names}
+    if hasattr(request, "dest_dir"):
+        params["dest_dir"] = request.dest_dir
+    task_id = task_queue.add_task(task_type=task_type, **params)
+    task_queue.submit(task_id, runnable_factory(task_id))
+    return TaskResponse(task_id=task_id, status="pending", progress_percent=0, task_type=task_type)
+
+
+def _transfer(op: str, request: FileTransferRequest) -> TaskResponse:
+    svc = _explorer()
+    try:
+        # Fail fast with a 4xx; the worker re-checks everything when it runs.
+        svc.precheck_transfer(op, request.pool, request.volume, request.parent,
+                              request.names, request.dest_dir)
+    except ExplorerError as e:
+        raise _explorer_http(e)
+    return _enqueue_file_task(f"file_{op}", request, lambda tid: (
+        lambda: svc.run_transfer(op, request.pool, request.volume, request.parent,
+                                 request.names, request.dest_dir, tid)))
+
+
+@router.post("/api/files/copy", response_model=TaskResponse)
+def files_copy(request: FileTransferRequest, session: dict = Depends(require_auth), _json: None = Depends(_require_json)):
+    return _transfer("copy", request)
+
+
+@router.post("/api/files/move", response_model=TaskResponse)
+def files_move(request: FileTransferRequest, session: dict = Depends(require_auth), _json: None = Depends(_require_json)):
+    return _transfer("move", request)
+
+
+@router.post("/api/files/delete", response_model=TaskResponse)
+def files_delete(request: FileDeleteRequest, session: dict = Depends(require_auth), _json: None = Depends(_require_json)):
+    svc = _explorer()
+    try:
+        svc.precheck_delete(request.pool, request.volume, request.parent, request.names)
+    except ExplorerError as e:
+        raise _explorer_http(e)
+    return _enqueue_file_task("file_delete", request, lambda tid: (
+        lambda: svc.run_delete(request.pool, request.volume, request.parent, request.names, tid)))
 
 
 @router.post("/api/restore", response_model=TaskResponse)

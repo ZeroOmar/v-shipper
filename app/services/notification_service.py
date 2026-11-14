@@ -194,6 +194,8 @@ class NotificationService:
             return base if base in self._ITEM_TOPICS else None
         if t in self._ITEM_TOPICS:
             return t
+        # File-explorer tasks (file_copy / file_move / file_delete) are
+        # deliberately not notified — they're interactive, frequent and small.
         return None
 
     def _build_target_label(self, task_type: str, params: dict) -> str:
