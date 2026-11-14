@@ -23,7 +23,7 @@ Test volumes live at `/Users/zero/Files/Repos/_temp/`. Staging dir for remote ba
 | Path | Role |
 |------|------|
 | `app/app.py` | FastAPI setup, startup cleanup, static/template mounting |
-| `app/config.py` | YAML config load, base64 password decode |
+| `app/config.py` | YAML config load, bcrypt password check |
 | `app/models.py` | Pydantic request/response models |
 | `app/api/routes.py` | All REST endpoints |
 | `app/services/volume_service.py` | Volume discovery, disk stats, rename/delete, permissions (chmod/chown) |
@@ -95,7 +95,7 @@ config_dir: /config           # persistent dir for config.yaml, tasks, schedules
 web_ui:
   port: 8000
   admin_user: admin
-  admin_password: YWRtaW4=   # base64("admin")
+  admin_password_hash: "$2b$12$..."   # bcrypt — `python -m app.hash_password 'pw'`
 ```
 
 ## Known issues / vibe-code debt

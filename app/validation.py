@@ -71,6 +71,24 @@ def validate_username(value: str, field: str = "username") -> str:
     return value
 
 
+# bcrypt modular-crypt hash: $2a$/$2b$/$2y$, 2-digit cost, 22-char salt + 31-char digest.
+_BCRYPT_RE = re.compile(r"^\$2[aby]\$(0[4-9]|[12][0-9]|3[01])\$[./A-Za-z0-9]{53}$")
+
+
+def validate_bcrypt_hash(value: str, field: str = "password_hash") -> str:
+    """Validate a bcrypt hash string. Raises ValueError."""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    value = value.strip()
+    if not _BCRYPT_RE.match(value):
+        raise ValueError(
+            f"{field} must be a bcrypt hash ($2b$12$...). Generate one with "
+            f"`docker run --rm ghcr.io/zeroomar/v-shipper hash-password 'your-password'`; "
+            f"in compose files escape every $ as $$"
+        )
+    return value
+
+
 def validate_backup_file(value: str, field: str = "backup_file") -> str:
     """Validate a backup archive filename: Docker-style name ending in .tar.gz."""
     value = validate_name(value, field)

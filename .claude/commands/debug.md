@@ -33,9 +33,9 @@ ls -la /Users/zero/Files/Repos/_temp/test_volumes/host1/
 rm /tmp/locks/<pool>_<volume>.lock
 ```
 
-**Login always fails** — decode the config password:
+**Login always fails** — verify the bcrypt hash matches (and `$` is escaped as `$$` in compose):
 ```bash
-echo "YWRtaW4=" | base64 -d   # should print: admin
+venv/bin/python -c "import bcrypt,sys; print(bcrypt.checkpw(sys.argv[1].encode(), sys.argv[2].encode()))" 'admin' '$2b$12$...'
 ```
 
 **Config parse error** — validate YAML:

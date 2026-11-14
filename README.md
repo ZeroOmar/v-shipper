@@ -68,7 +68,7 @@ config_dir: /config         # persistent config dir for task/schedule/notificati
 web_ui:
   port: 8000
   admin_user: admin
-  admin_password: YWRtaW4=  # base64("admin") — use a strong password in production
+  admin_password_hash: "$2b$12$..."  # bcrypt — generate with `hash-password` (see below)
 ```
 
 ### Pool types
@@ -83,11 +83,25 @@ Remote pools must be accessible via the rsync daemon protocol (`rsync://host:por
 
 **Remote→remote migration** — native rsync cannot transfer daemon-to-daemon ("source and destination cannot both be remote"). When both pools are remote and the **destination** has a v-helper (`api_host`/`api_key`), v-shipper instructs that v-helper to pull directly from the source's rsync module and streams its progress and logs back into the task. This requires the destination host to reach the source's rsync daemon on port 873, and the source's rsync `hosts allow` to include the destination host. Without a v-helper on the destination, the migration falls back to direct rsync and reports the daemon-to-daemon error.
 
-### Encoding the admin password
+### Admin password hash
+
+`web_ui.admin_password_hash` takes a bcrypt hash (`$2a$`/`$2b$`/`$2y$`), never the password itself. Generate one with the image's built-in helper:
 
 ```bash
-echo -n "yourpassword" | base64
+docker run --rm ghcr.io/zeroomar/v-shipper hash-password 'your-password'
+docker run --rm -it ghcr.io/zeroomar/v-shipper hash-password      # prompts, keeps it out of shell history
+venv/bin/python -m app.hash_password 'your-password'               # local dev
 ```
+
+In `docker-compose.yml` every `$` must be escaped as `$$`, otherwise compose treats it as a variable:
+
+```yaml
+web_ui:
+  admin_user: admin
+  admin_password_hash: "$$2b$$12$$...."
+```
+
+The old `admin_password` (base64/plaintext) key is no longer accepted — startup fails with a message telling you to switch.
 
 ## Quick start
 
@@ -246,9 +260,10 @@ v-shipper/
 
 ## Troubleshooting
 
-**Login fails** — decode and verify the config password:
+**Login fails** — check the hash matches the password (and that `$` was escaped as `$$` in compose):
 ```bash
-echo "YWRtaW4=" | base64 -d   # should print: admin
+docker run --rm --entrypoint python3 ghcr.io/zeroomar/v-shipper -c \
+  "import bcrypt,sys; print(bcrypt.checkpw(sys.argv[1].encode(), sys.argv[2].encode()))" 'your-password' '$2b$12$...'
 ```
 
 **Remote pool shows unreachable** — test the rsync daemon directly:

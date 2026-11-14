@@ -27,7 +27,7 @@ volumes:
 # Services
 services:
   v-shipper:
-    image: ghcr.io/zeroomar/v-shipper:0.3.1
+    image: ghcr.io/zeroomar/v-shipper:1.0.0
     container_name: v-shipper
     hostname: v-shipper
     restart: unless-stopped
@@ -65,7 +65,9 @@ services:
         web_ui:
           port: 80
           admin_user: admin
-          admin_password: YWRtaW4=
+          # bcrypt hash; escape every $ as $$ in compose files
+          # generate: docker run --rm ghcr.io/zeroomar/v-shipper hash-password 'your-password'
+          admin_password_hash: "$$2b$$12$$replace-with-generated-hash"
     volumes:
       - config:/config
       - dkr-01:/mnt/DKR-01

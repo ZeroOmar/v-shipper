@@ -37,6 +37,9 @@ COPY --from=builder /usr/local /usr/local
 # Copy application package into the project root
 COPY app/ ./app/
 
+# `docker run --rm <image> hash-password 'pw'` → bcrypt hash for web_ui.admin_password_hash
+COPY --chmod=755 docker/hash-password /usr/local/bin/hash-password
+
 # Create necessary directories
 RUN mkdir -p /tmp/locks /config && \
     chown -R root:root /tmp/locks /config

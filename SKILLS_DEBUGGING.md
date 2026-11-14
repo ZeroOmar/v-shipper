@@ -258,13 +258,13 @@ COPY --from=builder /root/.local /root/.local
 **Symptom**: Login always fails or "Not authenticated" on all endpoints
 
 **Debug Steps**:
-1. Verify admin password in config: Decode base64, verify value
+1. Verify the admin password hash: `bcrypt.checkpw(b'pw', b'$2b$12$...')` should be True
 2. Check session handling: Look for session cookie in browser DevTools
 3. Test login endpoint manually: `curl -X POST http://localhost/api/login -d '{"username":"admin","password":"admin"}'`
 4. Check CORS in DevTools Network tab
 
 **Common Causes**:
-- Password base64 encoded incorrectly in config
+- `admin_password_hash` generated from a different password, or `$` not escaped as `$$` in compose
 - Session cookie not set or expired
 - CORS blocking session credentials
 
@@ -272,11 +272,8 @@ COPY --from=builder /root/.local /root/.local
 ```python
 @app.post("/api/login")
 async def login(request: LoginRequest, response: Response):
-    # Decode password from config
-    config_password = base64.b64decode(config.web_ui.admin_password).decode()
-    
-    if request.username == config.web_ui.admin_user and \
-       request.password == config_password:
+    # validate_auth (app/config.py) checks admin_user + bcrypt.checkpw against admin_password_hash
+    if validate_auth(request.username, request.password):
         session_id = str(uuid.uuid4())
         sessions[session_id] = {"authenticated": True, "user": request.username}
         response.set_cookie("session_id", session_id, httponly=True, samesite='Lax')
@@ -319,7 +316,7 @@ async def login(request: LoginRequest, response: Response):
 ## Debugging Checklist
 - [ ] Check Docker logs: `docker logs -f <container>`
 - [ ] Verify mounts: `docker exec <container> ls -la /pools/`
-- [ ] Decode base64 secrets: `echo <base64> | base64 -d`
+- [ ] Check the admin bcrypt hash: `python -m app.hash_password` / `bcrypt.checkpw`
 - [ ] Check disk space: `df -h` inside and outside container
 - [ ] Inspect config: `echo "$VOLUME_MANAGER_CONFIG"`
 - [ ] Monitor resources: `docker stats <container>`

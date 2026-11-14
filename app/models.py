@@ -1,12 +1,12 @@
 """Data models for v-shipper application."""
 
-import base64
 from typing import Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.validation import (
     validate_name,
     validate_username,
+    validate_bcrypt_hash,
     validate_backup_file,
     validate_pool_path,
     validate_mode,
@@ -76,20 +76,17 @@ class WebUIConfig(BaseModel):
     """Web UI configuration."""
     port: int = Field(80, ge=1, le=65535)
     admin_user: str
-    admin_password: str
+    admin_password_hash: str  # bcrypt ($2a$/$2b$/$2y$); generate with `hash-password`
 
     @field_validator("admin_user")
     @classmethod
     def _validate_user(cls, v):
         return validate_username(v, "admin_user")
 
-    @field_validator("admin_password")
+    @field_validator("admin_password_hash")
     @classmethod
-    def _validate_password(cls, v):
-        # Opaque (may be base64 or plaintext) — length cap only, no charset restriction.
-        if not isinstance(v, str) or len(v) > MAX_CREDENTIAL_LEN:
-            raise ValueError("admin_password is invalid or too long")
-        return v
+    def _validate_password_hash(cls, v):
+        return validate_bcrypt_hash(v, "admin_password_hash")
 
 
 class AppConfig(BaseModel):

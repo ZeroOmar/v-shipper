@@ -1,7 +1,8 @@
 """Configuration management for v-shipper."""
 
+import hmac
 import os
-import base64
+import bcrypt
 import yaml
 from pathlib import Path
 from typing import Optional
@@ -66,10 +67,18 @@ class ConfigManager:
             
             # Parse web_ui
             web_ui_config = config_dict.get("web_ui", {})
+            if "admin_password" in web_ui_config:
+                raise ValueError(
+                    "web_ui.admin_password is no longer supported — replace it with "
+                    "web_ui.admin_password_hash (bcrypt). Generate one with "
+                    "`docker run --rm ghcr.io/zeroomar/v-shipper hash-password 'your-password'`"
+                )
+            if "admin_password_hash" not in web_ui_config:
+                raise ValueError("web_ui.admin_password_hash is required (bcrypt hash)")
             web_ui = WebUIConfig(
                 port=web_ui_config.get("port", 80),
                 admin_user=web_ui_config.get("admin_user", "admin"),
-                admin_password=web_ui_config.get("admin_password", "")
+                admin_password_hash=web_ui_config["admin_password_hash"],
             )
             
             tmp_dir = config_dict.get("tmp_dir", "/tmp")
@@ -113,7 +122,7 @@ class ConfigManager:
                 config_dict = {
                     "docker_hosts": [h.model_dump(exclude={"api_key"}) for h in self.config.docker_hosts],
                     "backup_pools": [b.model_dump(exclude={"api_key"}) for b in self.config.backup_pools],
-                    "web_ui": self.config.web_ui.model_dump()
+                    "web_ui": self.config.web_ui.model_dump(exclude={"admin_password_hash"})
                 }
                 yaml.dump(config_dict, f)
         except Exception as e:
@@ -131,12 +140,11 @@ class ConfigManager:
             return False
 
         try:
-            try:
-                config_password = base64.b64decode(self.config.web_ui.admin_password).decode('utf-8')
-            except Exception:
-                config_password = self.config.web_ui.admin_password
-
-            return username == self.config.web_ui.admin_user and password == config_password
+            web_ui = self.config.web_ui
+            user_ok = hmac.compare_digest(username.encode("utf-8"), web_ui.admin_user.encode("utf-8"))
+            # Always run the bcrypt check so a wrong username costs the same time as a wrong password.
+            pw_ok = bcrypt.checkpw(password.encode("utf-8"), web_ui.admin_password_hash.encode("utf-8"))
+            return user_ok and pw_ok
         except Exception as e:
             print(f"[ERROR] Auth validation error: {e}", flush=True)
             return False

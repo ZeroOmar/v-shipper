@@ -1,6 +1,5 @@
 """API routes for v-shipper."""
 
-import base64
 import re
 import uuid
 from pathlib import Path
@@ -109,6 +108,8 @@ async def login(request: LoginRequest, response: Response):
             return {"status": "ok", "message": "Login successful", "session_id": session_id}
         else:
             raise HTTPException(status_code=401, detail="Invalid credentials")
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[ERROR] Login error: {e}", flush=True)
         raise HTTPException(status_code=400, detail=str(e))

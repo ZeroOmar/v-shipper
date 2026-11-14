@@ -9,23 +9,11 @@ docker_hosts:
   - name: local2
     pool: /Users/zero/Files/Repos/_temp/test_volumes/host2
     pool_type: local
-  # - name: remote1
-  #   pool: /
-  #   pool_type: remote
-  #   rsync_module: docker-volumes
-  #   remote_host: 10.0.13.116:873
-  #   api_host: 10.0.13.116:8888
-  #   api_key: 24e88cb9-efdc-44a9-b3b8-8d9107f380e9
 
 backup_pools:
   - name: backup
     pool: /Users/zero/Files/Repos/_temp/test_backups
     pool_type: local
-  - name: remotebackup
-    pool: /
-    pool_type: remote
-    rsync_module: docker-backup
-    remote_host: 10.0.13.21:30026
 
 tmp_dir: /Users/zero/Files/Repos/_temp/tmp
 config_dir: /Users/zero/Files/Repos/_temp/config
@@ -33,7 +21,7 @@ config_dir: /Users/zero/Files/Repos/_temp/config
 web_ui:
   port: 8000
   admin_user: admin
-  admin_password: YWRtaW4=
+  admin_password_hash: $2b$12$MM5LacQsZrUmhxkvqnOKpOtiO2aruAfw2M.B4tmbt.xnYMFAZsp7e  # bcrypt("admin")
 '
 
 venv/bin/python -m uvicorn app.app:app \
