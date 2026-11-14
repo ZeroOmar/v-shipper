@@ -52,6 +52,25 @@ def validate_name(value: str, field: str = "name") -> str:
     return value
 
 
+# Login username: like a Docker name but also allows '@' (e.g. email-style "ops@example.com").
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9_.@-]{0,254}$")
+
+
+def validate_username(value: str, field: str = "username") -> str:
+    """Validate a web-UI login username. Raises ValueError."""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    value = value.strip()
+    if not value:
+        raise ValueError(f"{field} must not be empty")
+    if not _USERNAME_RE.match(value):
+        raise ValueError(
+            f"{field} may only contain letters, digits, '_', '.', '-', '@', must start "
+            f"with a letter, digit or '@', and be at most {MAX_NAME_LEN} characters"
+        )
+    return value
+
+
 def validate_backup_file(value: str, field: str = "backup_file") -> str:
     """Validate a backup archive filename: Docker-style name ending in .tar.gz."""
     value = validate_name(value, field)

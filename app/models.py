@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.validation import (
     validate_name,
+    validate_username,
     validate_backup_file,
     validate_pool_path,
     validate_mode,
@@ -80,7 +81,7 @@ class WebUIConfig(BaseModel):
     @field_validator("admin_user")
     @classmethod
     def _validate_user(cls, v):
-        return validate_name(v, "admin_user")
+        return validate_username(v, "admin_user")
 
     @field_validator("admin_password")
     @classmethod
